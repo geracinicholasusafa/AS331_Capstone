@@ -6,6 +6,7 @@
 #define SPI_SCK   18
 #define SPI_MISO  19
 #define SPI_MOSI  23
+#define MAX31855_CS_PIN 27  // Chip select for the MAX31855 thermocouple amplifier (shares SPI bus with SD)
 
 #define XBEE_RX 16  // ESP32 RX <- XBee DOUT
 #define XBEE_TX 17  // ESP32 TX -> XBee DIN
