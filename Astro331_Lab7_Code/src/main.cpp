@@ -43,6 +43,9 @@
  * | 6   | Run Lab 6 test (Attitude Determination) |
  * | 7   | Run Lab 7 Test A (tabletop static, RW torque measurement) |
  * | 8   | Run Lab 7 Test B (dynamic test with prescribed wheel speed) |
+ * | 10  | TCS: Turn automatic thermal control on/off (see tcs.h) |
+ * | 11  | TCS: Print status |
+ * | 12  | TCS: Clear fault |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -86,6 +89,7 @@
 #include <SdFat.h>                                        // SD Card library
 #include "definitions.h"                                  // Project definitions (this directory)
 #include "sd_functions.h"                                 //SD helper functions (this directory)
+#include "tcs.h"                                          // Thermal Control System (this directory)
 #include <SparkFun_MAX1704x_Fuel_Gauge_Arduino_Library.h> // MAX17048 fuel gauge
 #include <ICM_20948.h>                                    // Sparkfun IMU library
 #include <TB9051FTGMotorCarrier.h>                        // Pololu Motor Carrier Library
@@ -160,6 +164,12 @@ void setup() {
   Xbee.setTimeout(20);
   Xbee.println("[INFO] KestrelSAT online \npress 1 for options");
   // ----------------------------------------------
+
+  //----------------------------------------------
+  // Initialize thermocouple chip (TCS). Done BEFORE the SD card so the chip's select line
+  // is held high and cannot disturb the SD card on the shared SPI wires.
+  //----------------------------------------------
+  tcs_init(MAX31855_CS_PIN);
 
   //----------------------------------------------
   // Initialize SD Card
@@ -238,6 +248,8 @@ void loop() {
     Xbee.println("*");
     neopixelWrite(RGB_BUILTIN, 0, 255, 0); // Set to green (R=0, G=255, B=0)
   }
+
+  tcs_update(); // Thermal Control System: reads the thermocouple and (if switched on) runs the state machine
 
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -322,6 +334,11 @@ void process_main_menu() {
 
   int received_int = get_command_from_ground_station();
 
+  // Commands 5 to 9 take direct control of the reaction wheel, so the TCS must let go of it first.
+  if (received_int >= 5 && received_int <= 9 && tcs_is_enabled()) {
+    tcs_disable();
+  }
+
   switch (received_int) {
     case 0:
       driver.setOutput(0);
@@ -340,6 +357,9 @@ void process_main_menu() {
       Xbee.print("7 - Lab 7: Run Test A\n");
       Xbee.print("8 - Lab 7: Run Test B\n");
       Xbee.print("9 - Stream RW speed\n");
+      Xbee.print("10 - TCS: Turn automatic thermal control on/off\n");
+      Xbee.print("11 - TCS: Print status\n");
+      Xbee.print("12 - TCS: Clear fault\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -353,6 +373,9 @@ void process_main_menu() {
       Serial.print("7 - Lab 7: Run Test A\n");
       Serial.print("8 - Lab 7: Run Test B\n");
       Serial.print("9 - Stream RW speed\n");
+      Serial.print("10 - TCS: Turn automatic thermal control on/off\n");
+      Serial.print("11 - TCS: Print status\n");
+      Serial.print("12 - TCS: Clear fault\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -398,6 +421,19 @@ void process_main_menu() {
 
     case 99:
       sd_printFileMenu();
+      break;
+
+    // ---- Thermal Control System commands ----
+    case 10: // Turn automatic thermal control on or off
+      if (tcs_is_enabled()) tcs_disable(); else tcs_enable();
+      break;
+
+    case 11: // Print TCS status (state, panel temperature, louvers, ...)
+      tcs_print_status();
+      break;
+
+    case 12: // Clear a TCS fault
+      tcs_clear_fault();
       break;
 
     default:

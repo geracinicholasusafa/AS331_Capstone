@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the Astro 331 capstone: an autonomous **Active Thermal Control System (TCS)** for the KestrelSAT cubesat. It uses adjustable louvers (servos), temperature sensors, a 4-photoresistor sun sensor and the reaction wheel. The requirements live in `README.docx` at the repo root. Read it with `pandoc -t markdown README.docx`, or extract `word/document.xml` if pandoc is missing. `Astro 331 Agentic AI Workflow.pptx` is course material about the AI workflow.
 
-The TCS is **to be built**. The only code today is the Lab 6/7 firmware in `Astro331_Lab7_Code/`, which the TCS will extend. Do not start a separate project.
+The TCS extends the Lab 6/7 firmware in `Astro331_Lab7_Code/`. Do not start a separate project.
+
+**Built so far (compiles, not yet tested on hardware):** `include/tcs.h` and `src/tcs.cpp` hold the MAX31855 reading and the 7-state machine, called from `loop()` through `tcs_update()`. Ground-station commands: `10` toggles the TCS on/off, `11` prints status, `12` clears a fault. Commands 5 to 9 switch the TCS off first, because they take over the reaction wheel. The louver servos are a stub (`set_louvers()` in `tcs.cpp` only remembers the command). **Not built yet:** Peltier driver and the target-temperature command, TCS CSV logging, and the live GUI stream.
 
 ### TCS design (from README.docx and the team)
 
@@ -40,6 +42,12 @@ All commands run from `Astro331_Lab7_Code/` (PlatformIO, target `sparkfun_esp32s
 pio run                        # build
 pio run -t upload              # flash
 pio device monitor -b 115200   # USB serial console
+```
+
+On this machine the repo's OneDrive path is too long for the ICM-20948 library's nested example files, so the first `pio run` fails while installing libraries. Build with a short workspace instead (PlatformIO is at `~/.platformio/penv/Scripts/pio.exe`, not on PATH):
+
+```bash
+PLATFORMIO_WORKSPACE_DIR="C:/Users/C28Nicholas.Geraci/pio_ws" ~/.platformio/penv/Scripts/pio.exe run
 ```
 
 There is no firmware test suite. `test/` holds only the PlatformIO placeholder README.
