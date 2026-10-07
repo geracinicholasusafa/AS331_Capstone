@@ -16,11 +16,21 @@ The TCS is **to be built**. The only code today is the Lab 6/7 firmware in `Astr
   - `FAULT` puts the louvers and attitude control in the safest configuration. Fault cases include sensor failure, servo failure, wheel saturation, over- and under-temperature, Sun not found, and heating or cooling too fast.
   - Overheating and over-cooling limits are required, including a limit on how long the louvers stay open.
 - Log continuously to the SD card: sensors, commands, actuator states and thermal response.
-- **Peltier module (5 V, 1 A)** is a *test fixture only*. It heats and cools the metal panel to simulate the satellite's thermal environment, and the TCS reacts with louvers and attitude. It is not part of the control logic. Test it in air, not vacuum, so convection weakens the louver effect.
+- **Peltier module (5 V, 1 A)** is a *test fixture*. It heats and cools the metal panel to simulate the satellite's thermal environment, and the TCS reacts with louvers and attitude. The **firmware drives it**, and it must accept a **user-specified target temperature** (a ground-station command) and drive the panel to it. The TCS control logic must not depend on it. Reversing polarity needs an H-bridge, and the hardware is not yet chosen, so put it behind an interface like the servos. Test it in air, not vacuum, so convection weakens the louver effect.
 - **Thermocouples** on the panel are read through a **MAX31855** amplifier (SPI, read-only, shares the SD card's bus with its own chip-select; its fault bits map to the sensor-failure state). The planned library is `adafruit/Adafruit MAX31855 library`.
 - **Louver servos** are not yet chosen, so put them behind a small interface (position 0–100%).
 - **Sun sensor** is the existing A0–A3 photoresistor array. Reuse the sun-direction math in `lab7_run_test_B()`.
 - **Proposed thresholds** for room-temperature bench tests (to be confirmed, and kept as constants in `definitions.h`): target 30 °C, normal band 26–34 °C, `FAULT` above 45 °C or below 10 °C, or beyond 1 °C/s.
+
+## Rules (set by the team)
+
+- **Limits:** panel `FAULT` above 45 °C or below 10 °C. The Peltier is firmware-driven and must obey these limits and cut out on a sensor fault. The **reaction wheel is capped at 400 RPM**. Note that the existing mapping gives about 421 RPM at full throttle (`1000 * 5.05 / 12`), so the TCS must clamp throttle (about 0.95) or use measured speed.
+- **Thermal band:** keep the proposed values: target 30 °C, normal band 26 to 34 °C, `COOLING` above 34 °C and exits at 30 °C, `COLD_DETECTED` below 26 °C and exits at 30 °C.
+- **Existing commands:** leave Lab 6 and Lab 7 commands (0 to 9, 98, 99) and their code untouched. Only add new commands (use 10 and up) and new code.
+- **Code style:** write for readers who don't code. Use plain names (`louver_open_percent`, not `lvr_pos`), and comment each function and block with what it does and why in plain language. Put all tunable numbers in `definitions.h` with a comment giving units.
+- **Logging:** the TCS writes its own CSV file on the SD card, and also streams live temperature readings in a form the team's live-logging GUI can read. The GUI's data format has not been supplied yet, so ask before finalizing the stream format.
+- **Git:** you may commit and push to `origin` when a task is complete. Do not flash hardware or run commands that move actuators without being asked.
+- **Unknown hardware:** where a part is not chosen (servos, Peltier H-bridge), stub it behind a small interface and note it. Do not guess pins or parts.
 
 ## Commands
 
