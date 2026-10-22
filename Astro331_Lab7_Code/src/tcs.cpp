@@ -40,6 +40,7 @@ static uint32_t       lastUpdateMs = 0;             // When the TCS last did its
 static float panelTempC = NAN;        // Latest panel temperature (NAN = no valid reading)
 static float chipTempC = NAN;         // Latest MAX31855 chip temperature
 static uint8_t badReadCount = 0;      // Thermocouple failures in a row
+static uint8_t lastFaultBits = 0;     // What the MAX31855 said was wrong on the last bad read (1=open, 2=short to GND, 4=short to VCC)
 
 static float    rateReferenceTempC = NAN;   // Temperature at the start of the current rate window
 static uint32_t rateReferenceMs = 0;        // Time at the start of the current rate window
@@ -117,10 +118,12 @@ static void read_thermocouple() {
 
   if (isnan(reading)) {
     if (badReadCount < 255) badReadCount++;
+    lastFaultBits = thermocouple->readError();   // ask the chip what is wrong
     panelTempC = NAN;
     return;
   }
   badReadCount = 0;
+  lastFaultBits = 0;
   panelTempC = reading;
 
   // Work out the warming/cooling speed once per window (a short window would just measure noise).
@@ -133,6 +136,15 @@ static void read_thermocouple() {
     rateReferenceTempC = panelTempC;
     rateReferenceMs = now;
   }
+}
+
+/** Turns the chip's fault code into a sentence that says what to check. */
+static const char* describe_thermocouple_fault(uint8_t bits) {
+  if (bits == 0) return "no fault flags";
+  if (bits == 7) return "all fault flags set: chip not answering, check the 3.3V, GND, CLK, DO and CS wires";
+  if (bits & 1)  return "open circuit: thermocouple wire not connected or loose in the T+/T- screw terminals";
+  if (bits & 2)  return "thermocouple shorted to GND";
+  return "thermocouple shorted to VCC";
 }
 
 /**
@@ -203,6 +215,9 @@ static void read_wheel_speed() {
 static void enter_fault(TcsFaultReason reason) {
   faultReason = reason;
   say(String("[TCS] FAULT: ") + tcs_fault_name(reason));
+  if (reason == TCS_FAULT_SENSOR_FAILURE) {
+    say(String("[TCS] Thermocouple chip says: ") + describe_thermocouple_fault(lastFaultBits));
+  }
   enter_state(TCS_FAULT);
 }
 
@@ -412,4 +427,7 @@ void tcs_print_status() {
   line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   say(line);
+  if (isnan(panelTempC)) {   // explain why there is no temperature
+    say(String("[TCS] No temperature: ") + describe_thermocouple_fault(lastFaultBits));
+  }
 }
