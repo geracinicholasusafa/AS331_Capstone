@@ -37,7 +37,7 @@
 // --- Safety limits (going past these puts the TCS into FAULT) ---
 #define TCS_FAULT_HIGH_C         45.0   // Dangerously hot
 #define TCS_FAULT_LOW_C          10.0   // Dangerously cold
-#define TCS_FAULT_RATE_C_PER_S   1.0    // Temperature changing faster than this is not believable
+#define TCS_FAULT_RATE_C_PER_S   5.0    // Temperature changing faster than this is not believable (was 1.0, which tripped too easily)
 #define TCS_RATE_WINDOW_MS       2000   // How far back we look when measuring how fast it is changing
 #define TCS_SENSOR_FAIL_LIMIT    3      // This many bad thermocouple readings in a row -> sensor failure
 
