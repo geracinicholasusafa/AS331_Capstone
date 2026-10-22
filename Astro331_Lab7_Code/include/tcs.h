@@ -94,3 +94,9 @@ float tcs_get_wheel_rpm();
 
 /** Prints a one-line human-readable status to USB serial and XBee. */
 void tcs_print_status();
+
+/**
+ * Wiring test for the thermocouple chip. Talks to the MAX31855 directly (without the library or the
+ * SPI hardware) and explains in plain words what the wires are doing. Turn the TCS off first.
+ */
+void tcs_run_wiring_test();

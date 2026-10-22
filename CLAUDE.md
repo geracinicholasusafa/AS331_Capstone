@@ -8,7 +8,7 @@ This is the Astro 331 capstone: an autonomous **Active Thermal Control System (T
 
 The TCS extends the Lab 6/7 firmware in `Astro331_Lab7_Code/`. Do not start a separate project.
 
-**Built so far (compiles, not yet tested on hardware):** `include/tcs.h` and `src/tcs.cpp` hold the MAX31855 reading and the 6-state machine, called from `loop()` through `tcs_update()`. Ground-station commands: `10` toggles the TCS on/off, `11` prints status, `12` clears a fault. Commands 5 to 9 switch the TCS off first, because they take over the reaction wheel. The louver servos are a stub (`set_louvers()` in `tcs.cpp` only remembers the command). **Not built yet:** Peltier driver and the target-temperature command, TCS CSV logging, and the live GUI stream.
+**Built so far (compiles, not yet tested on hardware):** `include/tcs.h` and `src/tcs.cpp` hold the MAX31855 reading and the 6-state machine, called from `loop()` through `tcs_update()`. Ground-station commands: `10` toggles the TCS on/off, `11` prints status, `12` clears a fault, `13` runs a thermocouple wiring test (bit-bangs the MAX31855 with the data line pulled up, then down, and explains the result). Commands 5 to 9 switch the TCS off first, because they take over the reaction wheel. The louver servos are a stub (`set_louvers()` in `tcs.cpp` only remembers the command). **Not built yet:** Peltier driver and the target-temperature command, TCS CSV logging, and the live GUI stream.
 
 ### TCS design (from README.docx and the team)
 

@@ -384,6 +384,65 @@ void tcs_clear_fault() {
   enter_state(TCS_NORMAL);
 }
 
+/**
+ * Reads the 32-bit data word from the MAX31855 by wiggling the clock pin by hand ("bit-banging").
+ * This avoids the SPI hardware and the library, so it tests the wires and the chip on their own.
+ * @param dataPinMode INPUT_PULLUP or INPUT_PULLDOWN: what the ESP32 does to the data line when
+ *        nothing is driving it. A connected, working chip ignores this; a loose wire does not.
+ */
+static uint32_t bit_bang_read_word(int dataPinMode) {
+  pinMode(SPI_SCK, OUTPUT);
+  digitalWrite(SPI_SCK, LOW);
+  pinMode(SPI_MISO, dataPinMode);
+  pinMode(MAX31855_CS_PIN, OUTPUT);
+  digitalWrite(MAX31855_CS_PIN, HIGH);
+  delay(5);
+
+  digitalWrite(MAX31855_CS_PIN, LOW);                 // start talking to the chip
+  delayMicroseconds(10);
+  uint32_t word = 0;
+  for (int bit = 0; bit < 32; bit++) {
+    word = (word << 1) | (digitalRead(SPI_MISO) ? 1 : 0);  // read the data line while the clock is low
+    digitalWrite(SPI_SCK, HIGH);                      // one clock pulse moves the chip to the next bit
+    delayMicroseconds(10);
+    digitalWrite(SPI_SCK, LOW);
+    delayMicroseconds(10);
+  }
+  digitalWrite(MAX31855_CS_PIN, HIGH);                // stop talking to the chip
+  return word;
+}
+
+void tcs_run_wiring_test() {
+  if (tcs_enabled) {
+    say("[TCS] Turn the TCS off first (command 10), then run the wiring test.");
+    return;
+  }
+  say("[TCS] Thermocouple wiring test (reads the chip two ways, takes about a second)...");
+
+  SPI.end();                                          // free the pins so we can wiggle them by hand
+  digitalWrite(SD_CS_PIN, HIGH);                      // keep the SD card quiet during the test
+  uint32_t withPullUp   = bit_bang_read_word(INPUT_PULLUP);
+  uint32_t withPullDown = bit_bang_read_word(INPUT_PULLDOWN);
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);             // give the pins back to the SPI hardware
+
+  say(String("[TCS] Data line pulled UP:   0x") + String(withPullUp, HEX));
+  say(String("[TCS] Data line pulled DOWN: 0x") + String(withPullDown, HEX));
+
+  // Work out what that means.
+  if (withPullUp == 0xFFFFFFFF && withPullDown == 0x00000000) {
+    say("[TCS] RESULT: the data line (DO) is FLOATING. Nothing is driving it. Check: DO wire reaches GPIO 19, "
+        "CS wire reaches GPIO 27, the chip has 3.3V and GND, and the breadboard rows are actually connected.");
+  } else if (withPullUp == 0xFFFFFFFF && withPullDown == 0xFFFFFFFF) {
+    say("[TCS] RESULT: the data line is stuck HIGH. DO may be touching 3.3V, or the wrong pin is wired to 3.3V.");
+  } else if (withPullUp == 0x00000000 && withPullDown == 0x00000000) {
+    say("[TCS] RESULT: the data line is stuck LOW. DO may be touching GND, or the chip has no power.");
+  } else if (withPullUp == withPullDown) {
+    say("[TCS] RESULT: the chip IS answering. The wires are fine. If readings still fail, the problem is in the SPI setup, not the wiring.");
+  } else {
+    say("[TCS] RESULT: the data line is only partly driven (noisy or a poor connection). Re-seat the DO and CS wires.");
+  }
+}
+
 bool           tcs_is_enabled()             { return tcs_enabled; }
 TcsState       tcs_get_state()              { return state; }
 TcsFaultReason tcs_get_fault_reason()       { return faultReason; }
