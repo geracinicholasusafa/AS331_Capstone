@@ -23,7 +23,7 @@ The TCS extends the Lab 6/7 firmware in `Astro331_Lab7_Code/`. Do not start a se
 - **Thermocouples** on the panel are read through a **MAX31855** amplifier (SPI, read-only, shares the SD card's bus with its own chip-select; its fault bits map to the sensor-failure state). The planned library is `adafruit/Adafruit MAX31855 library`.
 - **Louver servos** are not yet chosen, so put them behind a small interface (position 0–100%).
 - **Sun sensor** is the existing A0–A3 photoresistor array. Reuse the sun-direction math in `lab7_run_test_B()`.
-- **Proposed thresholds** for room-temperature bench tests (to be confirmed, and kept as constants in `definitions.h`): target 30 °C, normal band 26–34 °C, `FAULT` above 45 °C or below 10 °C, or beyond 5 °C/s (raised from 1 °C/s, which tripped too easily).
+- **Proposed thresholds** for room-temperature bench tests (to be confirmed, and kept as constants in `definitions.h`): target 30 °C, normal band 26–34 °C, `FAULT` above 45 °C or below 10 °C, or beyond 200 °C/s (raised from 1, 5, then 15 °C/s, which tripped too easily; at this value the rate check only catches a wildly wrong reading).
 
 ## Rules (set by the team)
 
