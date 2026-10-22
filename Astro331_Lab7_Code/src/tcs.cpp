@@ -52,7 +52,10 @@ static float wheelRpm = 0.0;                               // Latest measured wh
 static int64_t  lastEncoderCount = 0;
 static uint32_t lastEncoderMs = 0;
 
-static float ventErrorDeg = NAN;      // How far the louvers are from pointing directly away from the brightest light
+static bool     telemetryOn = true;   // Is the live temperature stream switched on?
+static uint32_t lastTelemetryMs = 0;  // When the last stream line was sent
+
+static float ventErrorDeg = NAN;     // How far the louvers are from pointing directly away from the brightest light
 static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
 
 /*---------------------------------------------------------------------------------------------*/
@@ -340,7 +343,38 @@ bool tcs_init(uint8_t thermocoupleChipSelectPin) {
   return true;
 }
 
+/** Turns a number into text for the stream. Invalid readings become "nan" so a plot can skip them. */
+static String number_for_stream(float value, int decimals) {
+  return isnan(value) ? String("nan") : String(value, decimals);
+}
+
+/**
+ * Sends one line of live data for the plot (see tcs.h for the exact format).
+ * Runs on its own timer, separate from the TCS decisions, so the plot gets a steady one point per second.
+ */
+static void send_telemetry_if_due() {
+  if (!telemetryOn) return;
+  uint32_t now = millis();
+  if (now - lastTelemetryMs < TCS_TELEMETRY_INTERVAL_MS) return;
+  lastTelemetryMs = now;
+
+  String line = "TCS,t:" + String(now);
+  line += ",temp_C:" + number_for_stream(panelTempC, 2);
+  line += ",chip_C:" + number_for_stream(chipTempC, 2);
+  line += ",rate_C_per_s:" + number_for_stream(tempRateCPerS, 2);
+  line += ",state_id:" + String((int)state);
+  line += ",tcs_on:" + String(tcs_enabled ? 1 : 0);
+  line += ",louver_pct:" + number_for_stream(louverPercent, 0);
+  line += ",wheel_rpm:" + number_for_stream(wheelRpm, 1);
+  line += ",vent_error_deg:" + number_for_stream(ventErrorDeg, 1);
+  say(line);
+}
+
+void tcs_set_telemetry(bool on) { telemetryOn = on; }
+bool tcs_telemetry_enabled()    { return telemetryOn; }
+
 void tcs_update() {
+  send_telemetry_if_due();                                        // live plot data, once per second
   if (millis() - lastUpdateMs < TCS_UPDATE_INTERVAL_MS) return;   // not time yet
   lastUpdateMs = millis();
 

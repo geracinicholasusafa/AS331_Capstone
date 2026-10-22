@@ -47,6 +47,7 @@
  * | 11  | TCS: Print status |
  * | 12  | TCS: Clear fault |
  * | 13  | TCS: Thermocouple wiring test (MAX31855 wires, run with TCS off) |
+ * | 14  | TCS: Live temperature stream on/off (on by default, see tcs.h for the format) |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -362,6 +363,7 @@ void process_main_menu() {
       Xbee.print("11 - TCS: Print status\n");
       Xbee.print("12 - TCS: Clear fault\n");
       Xbee.print("13 - TCS: Thermocouple wiring test\n");
+      Xbee.print("14 - TCS: Live temperature stream on/off\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -379,6 +381,7 @@ void process_main_menu() {
       Serial.print("11 - TCS: Print status\n");
       Serial.print("12 - TCS: Clear fault\n");
       Serial.print("13 - TCS: Thermocouple wiring test\n");
+      Serial.print("14 - TCS: Live temperature stream on/off\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -441,6 +444,12 @@ void process_main_menu() {
 
     case 13: // Thermocouple wiring test (checks the MAX31855 wires directly)
       tcs_run_wiring_test();
+      break;
+
+    case 14: // Turn the live temperature stream on or off
+      tcs_set_telemetry(!tcs_telemetry_enabled());
+      Serial.println(tcs_telemetry_enabled() ? "[TCS] Live temperature stream ON." : "[TCS] Live temperature stream OFF.");
+      Xbee.println(tcs_telemetry_enabled() ? "[TCS] Live temperature stream ON." : "[TCS] Live temperature stream OFF.");
       break;
 
     default:

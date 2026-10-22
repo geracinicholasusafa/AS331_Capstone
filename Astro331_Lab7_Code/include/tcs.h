@@ -96,6 +96,19 @@ float tcs_get_wheel_rpm();
 void tcs_print_status();
 
 /**
+ * Turns the live temperature stream on or off. It is ON by default.
+ *
+ * While on, one line is sent every TCS_TELEMETRY_INTERVAL_MS to both USB serial and the XBee, like:
+ *   TCS,t:12345,temp_C:23.45,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan
+ * Every value after the colon is a plain number ("nan" means "no valid reading"), so a plotting
+ * program can read each one directly. state_id follows the order of TcsState:
+ *   0=NORMAL 1=SUN_AVOID 2=COOLING 3=COLD_DETECTED 4=RECOVERY 5=FAULT
+ * The stream pauses while a Lab 6/7 test is running, because those tests take over the processor.
+ */
+void tcs_set_telemetry(bool on);
+bool tcs_telemetry_enabled();
+
+/**
  * Wiring test for the thermocouple chip. Talks to the MAX31855 directly (without the library or the
  * SPI hardware) and explains in plain words what the wires are doing. Turn the TCS off first.
  */
