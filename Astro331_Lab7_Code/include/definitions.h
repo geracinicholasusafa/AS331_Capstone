@@ -45,25 +45,26 @@
 #define TCS_UPDATE_INTERVAL_MS   500    // How often the TCS reads sensors and decides what to do
 #define TCS_LOUVER_MAX_OPEN_MS   120000 // Louvers may stay open this long while cooling, then they close (PROPOSED, not confirmed)
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
-#define TCS_SUN_SEARCH_TIMEOUT_MS 60000 // Give up looking for the Sun after this long -> FAULT (PROPOSED)
+#define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)
 
 // --- Louvers (servo hardware not chosen yet; these are percentages, 0 = closed, 100 = fully open) ---
 #define TCS_LOUVER_CLOSED_PERCENT   0.0
 #define TCS_LOUVER_OPEN_PERCENT     100.0
 #define TCS_LOUVER_NOMINAL_PERCENT  0.0   // Where the louvers rest when nothing special is happening
 
-// --- Sun sensor / Sun search ---
-#define TCS_SUN_MIN_LIGHT_COUNTS   600    // Sum of the 4 sensors (each 0 to 4095). Less than this = "no Sun seen" (PROPOSED, tune with a lamp)
+// --- Sun sensor / turning the louvers away from the Sun ---
+// To vent heat, the louver face should point AWAY from the brightest light (toward cold space).
+#define TCS_SUN_MIN_LIGHT_COUNTS   600    // Sum of the 4 sensors (each 0 to 4095). Less than this = "no bright light seen", so no need to turn (PROPOSED, tune with a lamp)
 #define TCS_SUN_READS_TO_AVERAGE   5      // Readings averaged per sensor to smooth out noise
-#define TCS_THERMAL_SURFACE_ANGLE_DEG 0.0 // Direction (0 to 360 deg, in the sun-sensor frame) the Mylar thermal surface faces (PROPOSED, confirm)
-#define TCS_SUN_ALIGN_TOL_DEG      15.0   // Closer than this to the Sun counts as "aligned" (PROPOSED)
-#define TCS_SUN_LOST_TOL_DEG       30.0   // While heating, drifting further than this sends us back to searching
+#define TCS_LOUVER_FACE_ANGLE_DEG  0.0    // Direction (0 to 360 deg, in the sun-sensor frame) the louvers face (PROPOSED, confirm)
+#define TCS_VENT_ALIGN_TOL_DEG     15.0   // Within this many degrees of "directly away from the light" counts as aligned (PROPOSED)
+#define TCS_VENT_LOST_TOL_DEG      30.0   // While venting, drifting further off than this closes the louvers and turns again
 
 // --- Reaction wheel ---
 #define TCS_MAX_WHEEL_RPM          400.0  // Team limit: the wheel must never spin faster than this
 #define TCS_WHEEL_MAX_THROTTLE     0.95   // Full throttle gives about 421 RPM, so 0.95 keeps us just under 400
-#define TCS_SUN_SEARCH_MAX_THROTTLE 0.30  // Gentlest throttle used while turning toward the Sun (PROPOSED, tune on the bench)
-#define TCS_SUN_SEARCH_GAIN_PER_DEG 0.01  // Throttle per degree of pointing error (30 deg off -> 0.30)
-#define TCS_WHEEL_DIRECTION        1      // +1 or -1. Flip this if the satellite turns AWAY from the Sun
+#define TCS_TURN_MAX_THROTTLE      0.30   // Gentlest throttle used while turning the satellite (PROPOSED, tune on the bench)
+#define TCS_TURN_GAIN_PER_DEG      0.01   // Throttle per degree of pointing error (30 deg off -> 0.30)
+#define TCS_WHEEL_DIRECTION        1      // +1 or -1. Flip this if the satellite turns the WRONG way (toward the light instead of away)
 
 

@@ -51,7 +51,8 @@ static float wheelRpm = 0.0;                               // Latest measured wh
 static int64_t  lastEncoderCount = 0;
 static uint32_t lastEncoderMs = 0;
 
-static float sunErrorDeg = NAN;       // How far the thermal surface is from facing the Sun
+static float ventErrorDeg = NAN;      // How far the louvers are from pointing directly away from the brightest light
+static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
 
 /*---------------------------------------------------------------------------------------------*/
 // 2. Small helpers
@@ -135,8 +136,9 @@ static void read_thermocouple() {
 }
 
 /**
- * Looks at the four light sensors and works out how far the thermal surface is from facing the Sun.
- * Sets sunErrorDeg to NAN when there is not enough light to trust (no Sun seen).
+ * Looks at the four light sensors, finds the direction of the brightest light, and works out how far
+ * the louvers are from pointing directly AWAY from it (the best direction for venting heat).
+ * Sets ventErrorDeg to NAN when there is not enough light to trust (no bright light seen).
  * Uses the same Sun-direction math as Lab 7 Test B.
  */
 static void read_sun_sensor() {
@@ -154,7 +156,7 @@ static void read_sun_sensor() {
 
   float totalLight = plusX + minusX + plusY + minusY;
   if (totalLight < TCS_SUN_MIN_LIGHT_COUNTS) {
-    sunErrorDeg = NAN;                                   // too dark: no Sun to aim at
+    ventErrorDeg = NAN;                                  // too dark: no bright light to avoid
     return;
   }
 
@@ -163,7 +165,21 @@ static void read_sun_sensor() {
   float sunDirectionDeg = atan2(sunY, sunX) * RAD_TO_DEG;
   if (sunDirectionDeg < 0) sunDirectionDeg += 360.0;     // 0 to 360 like the lab code
 
-  sunErrorDeg = wrap_to_180(sunDirectionDeg - TCS_THERMAL_SURFACE_ANGLE_DEG);
+  // The ideal louver direction is exactly opposite the light (180 degrees away from it).
+  float idealLouverDirectionDeg = sunDirectionDeg + 180.0;
+  ventErrorDeg = wrap_to_180(TCS_LOUVER_FACE_ANGLE_DEG - idealLouverDirectionDeg);
+}
+
+/**
+ * Pushes the reaction wheel to turn the satellite so ventErrorDeg shrinks toward zero.
+ * The further off we are, the harder we push (up to a gentle maximum).
+ */
+static void turn_toward_vent_heading() {
+  float push = constrain(fabs(ventErrorDeg) * TCS_TURN_GAIN_PER_DEG, 0.0, TCS_TURN_MAX_THROTTLE);
+  // A positive error means the louvers are "ahead" of the ideal heading, so the satellite must turn
+  // backwards. The wheel always spins the opposite way to the satellite, so it spins forwards.
+  float direction = (ventErrorDeg > 0) ? 1.0 : -1.0;
+  set_wheel(direction * push * TCS_WHEEL_DIRECTION);
 }
 
 /** Measures reaction wheel speed from how far the encoder moved since the last check. */
@@ -217,12 +233,41 @@ static void run_state_machine() {
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
       set_wheel(0);
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
-      if (panelTempC > TCS_BAND_HIGH_C)      enter_state(TCS_COOLING);
-      else if (panelTempC < TCS_BAND_LOW_C)  enter_state(TCS_COLD_DETECTED);
+      if (panelTempC > TCS_BAND_HIGH_C) {
+        ventAnyway = false;
+        enter_state(TCS_SUN_AVOID);                       // too hot: first aim the louvers away from the light
+      } else if (panelTempC < TCS_BAND_LOW_C) {
+        enter_state(TCS_COLD_DETECTED);
+      }
+      break;
+
+    case TCS_SUN_AVOID:
+      // Too hot. Keep the louvers closed (so the Sun does not shine in) while the wheel turns the
+      // satellite until the louvers face away from the brightest light.
+      set_louvers(TCS_LOUVER_CLOSED_PERCENT);
+      read_sun_sensor();
+
+      if (!isnan(panelTempC) && panelTempC <= TCS_TARGET_TEMP_C) {
+        set_wheel(0);
+        enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
+      } else if (isnan(ventErrorDeg)) {
+        set_wheel(0);                                     // no bright light: any direction is fine, vent now
+        enter_state(TCS_COOLING);
+      } else if (fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
+        set_wheel(0);                                     // aimed at cold space
+        enter_state(TCS_COOLING);
+      } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
+        say("[TCS] Could not turn away from the light in time, venting anyway.");
+        set_wheel(0);
+        ventAnyway = true;                                // stop COOLING from sending us back to turning
+        enter_state(TCS_COOLING);
+      } else {
+        turn_toward_vent_heading();
+      }
       break;
 
     case TCS_COOLING:
-      // Too hot: open the louvers so heat radiates away.
+      // Open the louvers so internal heat radiates away.
       set_louvers(TCS_LOUVER_OPEN_PERCENT);
       set_wheel(0);
       if (!isnan(panelTempC) && panelTempC <= TCS_TARGET_TEMP_C) {
@@ -230,49 +275,21 @@ static void run_state_machine() {
       } else if (time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
+      } else if (!ventAnyway) {
+        // If the satellite has drifted so the louvers face the light again, close them and turn back.
+        read_sun_sensor();
+        if (!isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
+          say("[TCS] Louvers drifted toward the light, turning back.");
+          enter_state(TCS_SUN_AVOID);
+        }
       }
       break;
 
     case TCS_COLD_DETECTED:
-      // Too cold: shut the louvers so no more heat escapes, then go look for the Sun.
+      // Too cold: keep the louvers shut so no heat escapes, and wait for the satellite to warm up.
       set_louvers(TCS_LOUVER_CLOSED_PERCENT);
       set_wheel(0);
-      enter_state(TCS_SUN_SEARCH);
-      break;
-
-    case TCS_SUN_SEARCH:
-      // Turn the satellite until the thermal surface faces the Sun.
-      set_louvers(TCS_LOUVER_CLOSED_PERCENT);
-      read_sun_sensor();
-
-      if (!isnan(panelTempC) && panelTempC >= TCS_TARGET_TEMP_C) {
-        enter_state(TCS_RECOVERY);                        // warmed up by itself; no need to turn
-      } else if (time_in_state_ms() > TCS_SUN_SEARCH_TIMEOUT_MS) {
-        enter_fault(TCS_FAULT_SUN_NOT_FOUND);
-      } else if (isnan(sunErrorDeg)) {
-        set_wheel(0);                                     // no light seen: hold still and keep looking
-      } else if (fabs(sunErrorDeg) < TCS_SUN_ALIGN_TOL_DEG) {
-        set_wheel(0);                                     // aligned!
-        enter_state(TCS_SOLAR_HEATING);
-      } else {
-        // Turn toward the Sun: the further off we are, the harder we push (up to a gentle maximum).
-        float push = constrain(fabs(sunErrorDeg) * TCS_SUN_SEARCH_GAIN_PER_DEG, 0.0, TCS_SUN_SEARCH_MAX_THROTTLE);
-        float direction = (sunErrorDeg > 0) ? -1.0 : 1.0;  // turn so the error shrinks toward zero
-        set_wheel(direction * push * TCS_WHEEL_DIRECTION);
-      }
-      break;
-
-    case TCS_SOLAR_HEATING:
-      // Facing the Sun with louvers open: soak up heat until warm enough.
-      set_louvers(TCS_LOUVER_OPEN_PERCENT);
-      set_wheel(0);
-      read_sun_sensor();
-      if (!isnan(panelTempC) && panelTempC >= TCS_TARGET_TEMP_C) {
-        enter_state(TCS_RECOVERY);                        // warm enough
-      } else if (isnan(sunErrorDeg) || fabs(sunErrorDeg) > TCS_SUN_LOST_TOL_DEG) {
-        say("[TCS] Lost the Sun, searching again.");
-        enter_state(TCS_SUN_SEARCH);
-      }
+      if (!isnan(panelTempC) && panelTempC >= TCS_TARGET_TEMP_C) enter_state(TCS_RECOVERY);
       break;
 
     case TCS_RECOVERY:
@@ -325,6 +342,7 @@ void tcs_enable() {
   tcs_enabled = true;
   faultReason = TCS_FAULT_NONE;
   badReadCount = 0;
+  ventAnyway = false;
   state = TCS_NORMAL;
   stateStartMs = millis();
   rateReferenceTempC = NAN;               // restart the rate measurement from scratch
@@ -358,7 +376,7 @@ float          tcs_get_panel_temp_c()       { return panelTempC; }
 float          tcs_get_chip_temp_c()        { return chipTempC; }
 float          tcs_get_temp_rate_c_per_s()  { return tempRateCPerS; }
 float          tcs_get_louver_percent()     { return louverPercent; }
-float          tcs_get_sun_error_deg()      { return sunErrorDeg; }
+float          tcs_get_vent_error_deg()     { return ventErrorDeg; }
 float          tcs_get_wheel_rpm()          { return wheelRpm; }
 
 const char* tcs_state_name(TcsState s) {
@@ -366,8 +384,7 @@ const char* tcs_state_name(TcsState s) {
     case TCS_NORMAL:        return "NORMAL";
     case TCS_COOLING:       return "COOLING";
     case TCS_COLD_DETECTED: return "COLD_DETECTED";
-    case TCS_SUN_SEARCH:    return "SUN_SEARCH";
-    case TCS_SOLAR_HEATING: return "SOLAR_HEATING";
+    case TCS_SUN_AVOID:     return "SUN_AVOID";
     case TCS_RECOVERY:      return "RECOVERY";
     case TCS_FAULT:         return "FAULT";
   }
@@ -381,7 +398,6 @@ const char* tcs_fault_name(TcsFaultReason r) {
     case TCS_FAULT_TOO_HOT:         return "panel too hot";
     case TCS_FAULT_TOO_COLD:        return "panel too cold";
     case TCS_FAULT_RATE_TOO_FAST:   return "temperature changing too fast";
-    case TCS_FAULT_SUN_NOT_FOUND:   return "Sun not found";
     case TCS_FAULT_WHEEL_SATURATED: return "reaction wheel at speed limit";
   }
   return "unknown";
@@ -393,7 +409,7 @@ void tcs_print_status() {
   line += ", rate=" + String(tempRateCPerS, 2) + "C/s";
   line += ", louvers=" + String(louverPercent, 0) + "%";
   line += ", wheel=" + String(wheelRpm, 0) + "RPM";
-  line += ", sun_error=" + (isnan(sunErrorDeg) ? String("n/a") : String(sunErrorDeg, 1) + "deg");
+  line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   say(line);
 }

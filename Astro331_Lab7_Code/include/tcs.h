@@ -4,9 +4,9 @@
  * @brief Thermal Control System (TCS) for KestrelSAT.
  *
  * @details In plain words: the TCS keeps the satellite panel at a comfortable temperature.
- *   - Too hot  -> open the louvers (little shutters) so heat escapes.
- *   - Too cold -> close the louvers, turn the satellite toward the Sun with the reaction wheel,
- *                 then open the louvers so sunlight warms the panel.
+ *   - Too hot  -> turn the satellite with the reaction wheel so the louvers face AWAY from the
+ *                 brightest light (toward cold space), then open the louvers so internal heat escapes.
+ *   - Too cold -> close the louvers to keep the heat in, and wait for the satellite to warm up.
  *   - Something looks wrong -> go to FAULT, which puts everything in the safest position.
  *
  * The TCS never "waits around". Every call to tcs_update() does a quick bit of work and returns,
@@ -20,10 +20,9 @@
 /** The steps the TCS can be in. Only one is active at a time. */
 enum TcsState {
   TCS_NORMAL,         ///< Temperature is fine. Nothing to do except watch.
-  TCS_COOLING,        ///< Too hot. Louvers open to get rid of heat.
-  TCS_COLD_DETECTED,  ///< Too cold. Closing louvers and getting ready to find the Sun.
-  TCS_SUN_SEARCH,     ///< Turning the satellite with the reaction wheel until it faces the Sun.
-  TCS_SOLAR_HEATING,  ///< Facing the Sun with louvers open, soaking up heat.
+  TCS_SUN_AVOID,      ///< Too hot. Louvers stay closed while the reaction wheel turns them away from the brightest light.
+  TCS_COOLING,        ///< Too hot and pointed away from the light (or no light). Louvers open to vent heat.
+  TCS_COLD_DETECTED,  ///< Too cold. Louvers closed to keep heat in, waiting to warm up.
   TCS_RECOVERY,       ///< Heating/cooling is done. Louvers return to rest before going back to NORMAL.
   TCS_FAULT           ///< Something is wrong. Everything goes to its safest position and stays there.
 };
@@ -35,7 +34,6 @@ enum TcsFaultReason {
   TCS_FAULT_TOO_HOT,          ///< Panel hotter than TCS_FAULT_HIGH_C.
   TCS_FAULT_TOO_COLD,         ///< Panel colder than TCS_FAULT_LOW_C.
   TCS_FAULT_RATE_TOO_FAST,    ///< Temperature changing faster than is believable.
-  TCS_FAULT_SUN_NOT_FOUND,    ///< Searched for the Sun for too long and never found it.
   TCS_FAULT_WHEEL_SATURATED   ///< Reaction wheel reached its speed limit.
 };
 
@@ -85,8 +83,11 @@ float tcs_get_temp_rate_c_per_s();
 /** Where the louvers have been commanded, 0 = closed to 100 = fully open. */
 float tcs_get_louver_percent();
 
-/** Latest pointing error to the Sun in degrees (0 = aligned). NAN if no Sun is seen. */
-float tcs_get_sun_error_deg();
+/**
+ * How far the louvers are from pointing directly away from the brightest light, in degrees
+ * (0 = perfectly aimed at cold space). NAN if no bright light is seen.
+ */
+float tcs_get_vent_error_deg();
 
 /** Latest reaction wheel speed in RPM, measured with the encoder. */
 float tcs_get_wheel_rpm();

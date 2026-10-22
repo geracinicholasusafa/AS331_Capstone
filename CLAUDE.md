@@ -8,14 +8,15 @@ This is the Astro 331 capstone: an autonomous **Active Thermal Control System (T
 
 The TCS extends the Lab 6/7 firmware in `Astro331_Lab7_Code/`. Do not start a separate project.
 
-**Built so far (compiles, not yet tested on hardware):** `include/tcs.h` and `src/tcs.cpp` hold the MAX31855 reading and the 7-state machine, called from `loop()` through `tcs_update()`. Ground-station commands: `10` toggles the TCS on/off, `11` prints status, `12` clears a fault. Commands 5 to 9 switch the TCS off first, because they take over the reaction wheel. The louver servos are a stub (`set_louvers()` in `tcs.cpp` only remembers the command). **Not built yet:** Peltier driver and the target-temperature command, TCS CSV logging, and the live GUI stream.
+**Built so far (compiles, not yet tested on hardware):** `include/tcs.h` and `src/tcs.cpp` hold the MAX31855 reading and the 6-state machine, called from `loop()` through `tcs_update()`. Ground-station commands: `10` toggles the TCS on/off, `11` prints status, `12` clears a fault. Commands 5 to 9 switch the TCS off first, because they take over the reaction wheel. The louver servos are a stub (`set_louvers()` in `tcs.cpp` only remembers the command). **Not built yet:** Peltier driver and the target-temperature command, TCS CSV logging, and the live GUI stream.
 
 ### TCS design (from README.docx and the team)
 
-- **State machine**, non-blocking, called from `loop()`: `NORMAL`, `COOLING`, `COLD_DETECTED`, `SUN_SEARCH`, `SOLAR_HEATING`, `RECOVERY`, `FAULT`.
-  - Too hot: open the louvers to radiate heat.
-  - Too cold: close the louvers, find the Sun with the photoresistors, rotate the Mylar thermal surface toward it with the reaction wheel, then open the louvers to absorb heat.
-  - `FAULT` puts the louvers and attitude control in the safest configuration. Fault cases include sensor failure, servo failure, wheel saturation, over- and under-temperature, Sun not found, and heating or cooling too fast.
+- **There is no Mylar thermal surface and no solar heating.** The team's concept (which supersedes the older `README.docx` wording about `SUN_SEARCH` / `SOLAR_HEATING`) is that internal heat must be vented. The Sun is only used to decide which way to point the louvers.
+- **State machine**, non-blocking, called from `loop()`: `NORMAL`, `SUN_AVOID`, `COOLING`, `COLD_DETECTED`, `RECOVERY`, `FAULT`.
+  - Too hot: `SUN_AVOID` keeps the louvers closed while the reaction wheel turns the satellite until the louvers face directly *away* from the brightest light (found with the 4 photoresistors). Then `COOLING` opens the louvers to vent. No bright light means vent immediately. If turning takes longer than `TCS_SUN_AVOID_TIMEOUT_MS`, vent anyway. If the louvers drift toward the light while venting, close them and turn again.
+  - Too cold: close the louvers to hold heat in and wait for the satellite to warm up. No attitude control.
+  - `FAULT` puts the louvers and attitude control in the safest configuration. Fault cases include sensor failure, servo failure, wheel saturation, over- and under-temperature, and heating or cooling too fast.
   - Overheating and over-cooling limits are required, including a limit on how long the louvers stay open.
 - Log continuously to the SD card: sensors, commands, actuator states and thermal response.
 - **Peltier module (5 V, 1 A)** is a *test fixture*. It heats and cools the metal panel to simulate the satellite's thermal environment, and the TCS reacts with louvers and attitude. The **firmware drives it**, and it must accept a **user-specified target temperature** (a ground-station command) and drive the panel to it. The TCS control logic must not depend on it. Reversing polarity needs an H-bridge, and the hardware is not yet chosen, so put it behind an interface like the servos. Test it in air, not vacuum, so convection weakens the louver effect.
