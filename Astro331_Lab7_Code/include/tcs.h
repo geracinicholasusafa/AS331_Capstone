@@ -95,6 +95,29 @@ float tcs_get_wheel_rpm();
 /** Prints a one-line human-readable status to USB serial and XBee. */
 void tcs_print_status();
 
+/*---------------------------------------------------------------------------------------------*/
+// Peltier test heater (heats the panel to simulate the satellite warming up)
+// It is separate from the thermal control logic: it is a tool for testing, not part of the satellite.
+// It always shuts itself off if the thermocouple fails or the panel gets above TCS_FAULT_HIGH_C.
+/*---------------------------------------------------------------------------------------------*/
+
+/**
+ * Heats the panel and holds it at a chosen temperature (degrees Celsius).
+ * 0 turns the heater off. Anything else must be between TCS_PELTIER_MIN_TARGET_C and
+ * TCS_PELTIER_MAX_TARGET_C. It can only heat, so a target below the current temperature just means "off".
+ * @return true if accepted, false if the target was out of range (the heater is left as it was).
+ */
+bool tcs_set_peltier_target(float targetC);
+
+/** Runs the heater at a fixed percentage of full power (0 to 100) for bench testing. Still shuts off on any safety trip. */
+void tcs_set_peltier_power_manual(float percent);
+
+/** Turns the heater off immediately. */
+void tcs_stop_peltier();
+
+float tcs_get_peltier_power_percent();   ///< How hard the heater is running right now, 0 to 100
+float tcs_get_peltier_target_c();        ///< The temperature it is aiming for. NAN if not in target mode.
+
 /**
  * Moves the louvers by hand (0 = closed, 100 = fully open) for bench testing the servo.
  * Only works while automatic control is OFF, otherwise the TCS would just move them back.
@@ -105,7 +128,7 @@ void tcs_set_louvers_manual(float openPercent);
  * Turns the live temperature stream on or off. It is ON by default.
  *
  * While on, one line is sent every TCS_TELEMETRY_INTERVAL_MS to both USB serial and the XBee, like:
- *   TCS,t:12345,temp_C:23.45,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan
+ *   TCS,t:12345,temp_C:23.45,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan,peltier_pct:0.0,peltier_target_C:nan
  * Every value after the colon is a plain number ("nan" means "no valid reading"), so a plotting
  * program can read each one directly. state_id follows the order of TcsState:
  *   0=NORMAL 1=SUN_AVOID 2=COOLING 3=COLD_DETECTED 4=RECOVERY 5=FAULT

@@ -267,6 +267,83 @@ static bool check_for_faults() {
 }
 
 /*---------------------------------------------------------------------------------------------*/
+// 4b. Peltier test heater (separate from the thermal control logic)
+//     It heats the panel so we can watch how the louvers and attitude react to a warming satellite.
+//     It only ever heats. Its power is a percentage: how much of the time it is switched on.
+/*---------------------------------------------------------------------------------------------*/
+
+enum PeltierMode { PELTIER_OFF, PELTIER_HOLD_TARGET, PELTIER_MANUAL_POWER };
+
+static PeltierMode peltierMode = PELTIER_OFF;
+static bool     peltierStarted = false;      // Switched on the first time it is used, so the pin stays quiet at power-up
+static float    peltierTargetC = NAN;        // Temperature we are holding (only in HOLD_TARGET mode)
+static float    peltierPowerPercent = 0.0;   // How hard it is running right now
+static float    peltierManualPercent = 0.0;  // Power asked for in MANUAL_POWER mode
+static float    peltierIntegral = 0.0;       // The slowly building "closing the last gap" part of the controller
+static uint32_t peltierLastRunMs = 0;
+
+/** Sends a power level (0 to 100) to the heater switch. */
+static void apply_peltier_power(float percent) {
+  peltierPowerPercent = constrain(percent, 0.0, TCS_PELTIER_MAX_POWER_PERCENT);
+  if (!peltierStarted) {
+    if (peltierPowerPercent <= 0.0) return;          // nothing to do and the pin has never been used
+    ledcSetup(TCS_PELTIER_LEDC_CHANNEL, TCS_PELTIER_PWM_FREQ_HZ, TCS_PELTIER_PWM_BITS);
+    ledcAttachPin(TCS_PELTIER_PIN, TCS_PELTIER_LEDC_CHANNEL);
+    peltierStarted = true;
+  }
+  const uint32_t fullScale = (1UL << TCS_PELTIER_PWM_BITS) - 1;
+  ledcWrite(TCS_PELTIER_LEDC_CHANNEL, (uint32_t)(peltierPowerPercent / 100.0 * fullScale));
+}
+
+/** Turns the heater fully off and forgets what it was doing. */
+static void peltier_off(const char* reasonOrNull) {
+  peltierMode = PELTIER_OFF;
+  peltierTargetC = NAN;
+  peltierIntegral = 0.0;
+  apply_peltier_power(0);
+  if (reasonOrNull != nullptr) say(String("[TCS] Peltier heater OFF: ") + reasonOrNull);
+}
+
+/**
+ * Decides how hard the heater should run. Called every TCS update (twice a second).
+ *
+ * Safety first, in this order:
+ *   1. Thermocouple failed for several readings in a row -> heater off for good.
+ *   2. No temperature reading right now -> heater paused (power 0) until readings come back.
+ *   3. Panel above the fault limit -> heater off for good.
+ * Then, if it is holding a target: power grows the further the panel is below the target, plus a slow
+ * build-up (the "integral") so it can close the last bit of the gap. At or above target, power is zero.
+ */
+static void run_peltier() {
+  uint32_t now = millis();
+  float dtSeconds = (peltierLastRunMs == 0) ? 0.0 : (now - peltierLastRunMs) / 1000.0f;
+  peltierLastRunMs = now;
+
+  if (peltierMode == PELTIER_OFF) return;
+
+  if (badReadCount >= TCS_SENSOR_FAIL_LIMIT) { peltier_off("thermocouple failed"); return; }
+  if (isnan(panelTempC)) { apply_peltier_power(0); return; }
+  if (panelTempC > TCS_FAULT_HIGH_C) { peltier_off("panel above the safety limit"); return; }
+
+  if (peltierMode == PELTIER_MANUAL_POWER) {
+    apply_peltier_power(peltierManualPercent);
+    return;
+  }
+
+  // Hold-target mode:
+  float error = peltierTargetC - panelTempC;           // positive = panel is colder than the target
+  if (error <= 0) {
+    peltierIntegral = 0.0;                             // at or above target: stop heating and reset the build-up
+    apply_peltier_power(0);
+    return;
+  }
+  peltierIntegral += error * dtSeconds;
+  float integralLimit = TCS_PELTIER_MAX_POWER_PERCENT / TCS_PELTIER_KI_PERCENT_PER_C_S;   // stops it winding up forever
+  peltierIntegral = constrain(peltierIntegral, 0.0, integralLimit);
+  apply_peltier_power(TCS_PELTIER_KP_PERCENT_PER_C * error + TCS_PELTIER_KI_PERCENT_PER_C_S * peltierIntegral);
+}
+
+/*---------------------------------------------------------------------------------------------*/
 // 5. The state machine: what to do in each step
 /*---------------------------------------------------------------------------------------------*/
 
@@ -394,8 +471,44 @@ static void send_telemetry_if_due() {
   line += ",louver_pct:" + number_for_stream(louverPercent, 0);
   line += ",wheel_rpm:" + number_for_stream(wheelRpm, 1);
   line += ",vent_error_deg:" + number_for_stream(ventErrorDeg, 1);
+  line += ",peltier_pct:" + number_for_stream(peltierPowerPercent, 1);
+  line += ",peltier_target_C:" + number_for_stream(peltierTargetC, 1);
   say(line);
 }
+
+bool tcs_set_peltier_target(float targetC) {
+  if (targetC == 0) { peltier_off("target set to 0"); return true; }
+  if (targetC < TCS_PELTIER_MIN_TARGET_C || targetC > TCS_PELTIER_MAX_TARGET_C) {
+    say(String("[TCS] Peltier target must be 0 (off) or between ") + String(TCS_PELTIER_MIN_TARGET_C, 0) +
+        " and " + String(TCS_PELTIER_MAX_TARGET_C, 0) + " C. Heater left as it was.");
+    return false;
+  }
+  if (isnan(panelTempC)) {
+    say("[TCS] No valid thermocouple reading, so the heater was NOT started.");
+    return false;
+  }
+  peltierMode = PELTIER_HOLD_TARGET;
+  peltierTargetC = targetC;
+  peltierIntegral = 0.0;
+  say(String("[TCS] Peltier heater holding the panel at ") + String(targetC, 1) + " C (heats only).");
+  return true;
+}
+
+void tcs_set_peltier_power_manual(float percent) {
+  if (isnan(panelTempC)) {
+    say("[TCS] No valid thermocouple reading, so the heater was NOT started.");
+    return;
+  }
+  peltierManualPercent = constrain(percent, 0.0, TCS_PELTIER_MAX_POWER_PERCENT);
+  if (peltierManualPercent <= 0) { peltier_off("power set to 0"); return; }
+  peltierMode = PELTIER_MANUAL_POWER;
+  peltierTargetC = NAN;
+  say(String("[TCS] Peltier heater at a fixed ") + String(peltierManualPercent, 0) + "% power.");
+}
+
+void  tcs_stop_peltier()               { if (peltierMode != PELTIER_OFF || peltierPowerPercent > 0) peltier_off("stopped"); }
+float tcs_get_peltier_power_percent()  { return peltierPowerPercent; }
+float tcs_get_peltier_target_c()       { return peltierTargetC; }
 
 void tcs_set_louvers_manual(float openPercent) {
   if (tcs_enabled) {
@@ -415,6 +528,7 @@ void tcs_update() {
   lastUpdateMs = millis();
 
   read_thermocouple();                    // always keep the temperature fresh, even when the TCS is off
+  run_peltier();                          // test heater: runs whether or not the TCS is on
   if (!tcs_enabled) return;
 
   read_wheel_speed();
@@ -553,6 +667,7 @@ void tcs_print_status() {
   line += ", rate=" + String(tempRateCPerS, 2) + "C/s";
   line += ", louvers=" + String(louverPercent, 0) + "%";
   line += ", wheel=" + String(wheelRpm, 0) + "RPM";
+  line += ", peltier=" + String(peltierPowerPercent, 0) + "%" + (isnan(peltierTargetC) ? String("") : " (target " + String(peltierTargetC, 1) + "C)");
   line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   say(line);

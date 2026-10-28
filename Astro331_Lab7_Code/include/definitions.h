@@ -64,6 +64,22 @@
 #define TCS_SERVO_LEDC_CHANNEL      0     // ESP32 PWM channel for the servo. Channels 15 and 14 are used by the wheel motor driver, so keep this low.
 #define TCS_SERVO_PWM_BITS          14    // Resolution of the servo pulse timing (14 bits = very fine steps)
 
+// --- Peltier module (5 V, 1 A) used ONLY as a test heater for the panel ---
+// It is switched on and off very fast (PWM) by a transistor/MOSFET; the percentage is how much of the time it is on.
+// It only heats. Wire it so the side touching the panel is the HOT side (if the panel gets colder, swap its two power wires).
+// Power: use a separate 5 V supply (1 A or more), never a board pin, and join its ground to the board's ground.
+// Put a heatsink on the side NOT touching the panel.
+#define TCS_PELTIER_PIN             12    // Control wire GPIO that drives the switch (PROPOSED: one of the last free pins; confirm wiring)
+                                          // Pin 12 is read at boot, so the switch's input should be pulled to ground (a 10k resistor works).
+#define TCS_PELTIER_LEDC_CHANNEL    4     // ESP32 PWM channel (0 = servo, 14 and 15 = wheel motor driver)
+#define TCS_PELTIER_PWM_FREQ_HZ     1000  // How fast it switches on and off, times per second
+#define TCS_PELTIER_PWM_BITS        10    // Resolution of the on/off timing
+#define TCS_PELTIER_MAX_POWER_PERCENT 100.0 // Never use more than this much power (lower it for a gentler heater)
+#define TCS_PELTIER_MIN_TARGET_C    15.0  // Lowest target temperature the command accepts
+#define TCS_PELTIER_MAX_TARGET_C    40.0  // Highest target temperature the command accepts (kept below the 45 C fault limit)
+#define TCS_PELTIER_KP_PERCENT_PER_C 15.0 // Heater power per degree below target (10 C below -> 100%). Bigger = pushes harder (PROPOSED, tune)
+#define TCS_PELTIER_KI_PERCENT_PER_C_S 0.3 // Extra power that builds up each second while below target, to close the last gap (PROPOSED, tune)
+
 // --- Sun sensor / turning the louvers away from the Sun ---
 // To vent heat, the louver face should point AWAY from the brightest light (toward cold space).
 #define TCS_SUN_MIN_LIGHT_COUNTS   600    // Sum of the 4 sensors (each 0 to 4095). Less than this = "no bright light seen", so no need to turn (PROPOSED, tune with a lamp)

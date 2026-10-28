@@ -49,6 +49,8 @@
  * | 13  | TCS: Thermocouple wiring test (MAX31855 wires, run with TCS off) |
  * | 14  | TCS: Live temperature stream on/off (on by default, see tcs.h for the format) |
  * | 15  | TCS: Move louvers by hand to 0-100 percent open (run with TCS off) |
+ * | 16  | Peltier test heater: hold the panel at a chosen temperature (0 = off) |
+ * | 17  | Peltier test heater: fixed power percent for bench testing (0 = off) |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -144,6 +146,8 @@ void lab7_run_test_B();
 float set_speed_test_B(uint32_t t0);
 void stream_RWspeed();
 void manual_set_louvers();
+void set_peltier_target_from_user();
+void set_peltier_power_from_user();
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // SETUP:
@@ -342,6 +346,11 @@ void process_main_menu() {
   if (received_int >= 5 && received_int <= 9 && tcs_is_enabled()) {
     tcs_disable();
   }
+  // Commands that run long, blocking loops (the lab tests, SD file printing) cannot watch the temperature,
+  // so the Peltier heater is switched off first to be safe.
+  if ((received_int >= 5 && received_int <= 9) || received_int == 98 || received_int == 99) {
+    tcs_stop_peltier();
+  }
 
   switch (received_int) {
     case 0:
@@ -367,6 +376,8 @@ void process_main_menu() {
       Xbee.print("13 - TCS: Thermocouple wiring test\n");
       Xbee.print("14 - TCS: Live temperature stream on/off\n");
       Xbee.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
+      Xbee.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
+      Xbee.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -386,6 +397,8 @@ void process_main_menu() {
       Serial.print("13 - TCS: Thermocouple wiring test\n");
       Serial.print("14 - TCS: Live temperature stream on/off\n");
       Serial.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
+      Serial.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
+      Serial.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -452,6 +465,14 @@ void process_main_menu() {
 
     case 15: // Move the louvers by hand (0 to 100 percent open)
       manual_set_louvers();
+      break;
+
+    case 16: // Peltier heater: hold the panel at a chosen temperature
+      set_peltier_target_from_user();
+      break;
+
+    case 17: // Peltier heater: run at a fixed percentage of power (bench test)
+      set_peltier_power_from_user();
       break;
 
     case 14: // Turn the live temperature stream on or off
@@ -1294,6 +1315,7 @@ void manual_set_louvers() {
 
   uint32_t giveUpAt = millis() + 30000;
   while (!Serial.available() && !Xbee.available()) {   // wait for the user to type a number
+    tcs_update();   // keep watching the temperature (and the Peltier heater's safety checks) while we wait
     if (millis() > giveUpAt) {
       Serial.println("[CAUTION] No input, louvers not moved.");
       Xbee.println("[CAUTION] No input, louvers not moved.");
@@ -1306,5 +1328,55 @@ void manual_set_louvers() {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   tcs_set_louvers_manual((float)percent);
+}
+
+/*---------------------------------------------------------------------------------------------*/
+// Peltier test heater commands:
+/*---------------------------------------------------------------------------------------------*/
+/**
+ * @brief Waits up to 30 seconds for the user to type a number (decimals allowed) and returns it.
+ *
+ * While it waits it keeps the thermal system running (tcs_update), so the heater's safety checks
+ * keep happening. Returns false if nothing was typed in time.
+ */
+static bool read_number_from_user(float *value) {
+  uint32_t giveUpAt = millis() + 30000;
+  while (!Serial.available() && !Xbee.available()) {
+    tcs_update();
+    if (millis() > giveUpAt) return false;
+  }
+  delay(100); // let the whole number arrive
+
+  String text = Xbee.available() ? Xbee.readStringUntil('\n') : Serial.readStringUntil('\n');
+  text.trim();
+  if (text.length() == 0) return false;
+  *value = text.toFloat();
+  return true;
+}
+
+/** Command 16: asks for a target temperature in Celsius (0 = off) and starts holding the panel there. */
+void set_peltier_target_from_user() {
+  Serial.println("Enter Peltier target temperature in C (15 to 40), or 0 for off:");
+  Xbee.println("Enter Peltier target temperature in C (15 to 40), or 0 for off:");
+  float target;
+  if (!read_number_from_user(&target)) {
+    Serial.println("[CAUTION] No input, heater left as it was.");
+    Xbee.println("[CAUTION] No input, heater left as it was.");
+    return;
+  }
+  tcs_set_peltier_target(target);
+}
+
+/** Command 17: asks for a fixed heater power from 0 to 100 percent (0 = off), for bench testing. */
+void set_peltier_power_from_user() {
+  Serial.println("Enter Peltier power in percent (0 to 100), 0 for off. Start low, e.g. 20:");
+  Xbee.println("Enter Peltier power in percent (0 to 100), 0 for off. Start low, e.g. 20:");
+  float percent;
+  if (!read_number_from_user(&percent)) {
+    Serial.println("[CAUTION] No input, heater left as it was.");
+    Xbee.println("[CAUTION] No input, heater left as it was.");
+    return;
+  }
+  tcs_set_peltier_power_manual(percent);
 }
 
