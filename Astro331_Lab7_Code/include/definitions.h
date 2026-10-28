@@ -48,10 +48,21 @@
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
 #define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)
 
-// --- Louvers (servo hardware not chosen yet; these are percentages, 0 = closed, 100 = fully open) ---
+// --- Louvers (percentages: 0 = closed, 100 = fully open) ---
 #define TCS_LOUVER_CLOSED_PERCENT   0.0
 #define TCS_LOUVER_OPEN_PERCENT     100.0
 #define TCS_LOUVER_NOMINAL_PERCENT  0.0   // Where the louvers rest when nothing special is happening
+
+// --- Louver servo: Tower Pro SG92R micro servo ---
+// A servo is told where to point by a repeating pulse (20 ms apart); the pulse LENGTH sets the angle.
+// Power: the servo needs 5 V (the board's USB/5V pin), NOT 3.3 V, and its ground must be shared with the board.
+#define TCS_LOUVER_SERVO_PIN        4     // Signal wire GPIO (PROPOSED: the only fully free output pin; confirm wiring)
+#define TCS_SERVO_PULSE_MIN_US      500   // Pulse length at 0 degrees, in microseconds (SG92R datasheet: about 500)
+#define TCS_SERVO_PULSE_MAX_US      2400  // Pulse length at 180 degrees, in microseconds (SG92R datasheet: about 2400)
+#define TCS_LOUVER_CLOSED_ANGLE_DEG 0.0   // Servo angle when the louvers are closed (PROPOSED, depends on how it is mounted)
+#define TCS_LOUVER_OPEN_ANGLE_DEG   90.0  // Servo angle when the louvers are fully open (PROPOSED, depends on how it is mounted)
+#define TCS_SERVO_LEDC_CHANNEL      0     // ESP32 PWM channel for the servo. Channels 15 and 14 are used by the wheel motor driver, so keep this low.
+#define TCS_SERVO_PWM_BITS          14    // Resolution of the servo pulse timing (14 bits = very fine steps)
 
 // --- Sun sensor / turning the louvers away from the Sun ---
 // To vent heat, the louver face should point AWAY from the brightest light (toward cold space).

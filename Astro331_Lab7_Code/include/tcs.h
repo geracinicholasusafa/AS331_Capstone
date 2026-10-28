@@ -96,6 +96,12 @@ float tcs_get_wheel_rpm();
 void tcs_print_status();
 
 /**
+ * Moves the louvers by hand (0 = closed, 100 = fully open) for bench testing the servo.
+ * Only works while automatic control is OFF, otherwise the TCS would just move them back.
+ */
+void tcs_set_louvers_manual(float openPercent);
+
+/**
  * Turns the live temperature stream on or off. It is ON by default.
  *
  * While on, one line is sent every TCS_TELEMETRY_INTERVAL_MS to both USB serial and the XBee, like:

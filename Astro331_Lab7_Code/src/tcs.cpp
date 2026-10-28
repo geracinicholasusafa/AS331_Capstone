@@ -68,14 +68,41 @@ static void say(const String& message) {
   Xbee.println(message);
 }
 
+static bool  servoStarted = false;     // Has the servo been switched on yet? (it is only started on the first move)
+static float servoLastPercent = -1.0;  // Where we last sent the servo, so we only send a new pulse when it changes
+
 /**
  * Moves the louvers. 0 = closed, 100 = fully open.
- * NOTE: the louver servos have not been chosen yet. For now this only remembers the command so the
- * rest of the TCS can be tested. When the servo hardware is known, the real servo code goes here
- * and nothing else in this file has to change.
+ *
+ * The Tower Pro SG92R servo is told where to point by a pulse sent every 20 ms (50 times a second).
+ * A 0.5 ms pulse means 0 degrees and a 2.4 ms pulse means 180 degrees; in between is in proportion.
+ * We turn the percentage into an angle, the angle into a pulse length, and the pulse length into the
+ * number the ESP32's PWM hardware wants.
+ *
+ * The servo is not started until the first time it is asked to move, so it does not twitch at power-up.
  */
 static void set_louvers(float openPercent) {
   louverPercent = constrain(openPercent, TCS_LOUVER_CLOSED_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+  if (servoStarted && louverPercent == servoLastPercent) return;   // already there, nothing to send
+
+  // Percentage -> servo angle (the closed and open angles are settings in definitions.h).
+  float fractionOpen = (louverPercent - TCS_LOUVER_CLOSED_PERCENT) / (TCS_LOUVER_OPEN_PERCENT - TCS_LOUVER_CLOSED_PERCENT);
+  float angleDeg = TCS_LOUVER_CLOSED_ANGLE_DEG + fractionOpen * (TCS_LOUVER_OPEN_ANGLE_DEG - TCS_LOUVER_CLOSED_ANGLE_DEG);
+
+  // Angle -> pulse length in microseconds.
+  float pulseUs = TCS_SERVO_PULSE_MIN_US + (angleDeg / 180.0) * (TCS_SERVO_PULSE_MAX_US - TCS_SERVO_PULSE_MIN_US);
+
+  // Pulse length -> PWM number. One full 20,000 microsecond cycle equals the maximum number.
+  const uint32_t fullScale = (1UL << TCS_SERVO_PWM_BITS) - 1;
+  uint32_t duty = (uint32_t)((pulseUs / 20000.0) * fullScale);
+
+  if (!servoStarted) {
+    ledcSetup(TCS_SERVO_LEDC_CHANNEL, 50, TCS_SERVO_PWM_BITS);   // 50 pulses per second
+    ledcAttachPin(TCS_LOUVER_SERVO_PIN, TCS_SERVO_LEDC_CHANNEL);
+    servoStarted = true;
+  }
+  ledcWrite(TCS_SERVO_LEDC_CHANNEL, duty);
+  servoLastPercent = louverPercent;
 }
 
 /** Spins the reaction wheel. -1 to +1, but never past the team's 400 RPM safety cap. */
@@ -368,6 +395,15 @@ static void send_telemetry_if_due() {
   line += ",wheel_rpm:" + number_for_stream(wheelRpm, 1);
   line += ",vent_error_deg:" + number_for_stream(ventErrorDeg, 1);
   say(line);
+}
+
+void tcs_set_louvers_manual(float openPercent) {
+  if (tcs_enabled) {
+    say("[TCS] Turn automatic thermal control off first (command 10), or it will move the louvers back.");
+    return;
+  }
+  set_louvers(openPercent);
+  say(String("[TCS] Louvers set to ") + String(louverPercent, 0) + "% open.");
 }
 
 void tcs_set_telemetry(bool on) { telemetryOn = on; }

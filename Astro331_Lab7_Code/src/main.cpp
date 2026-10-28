@@ -48,6 +48,7 @@
  * | 12  | TCS: Clear fault |
  * | 13  | TCS: Thermocouple wiring test (MAX31855 wires, run with TCS off) |
  * | 14  | TCS: Live temperature stream on/off (on by default, see tcs.h for the format) |
+ * | 15  | TCS: Move louvers by hand to 0-100 percent open (run with TCS off) |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -142,6 +143,7 @@ void lab7_run_test_A();
 void lab7_run_test_B();
 float set_speed_test_B(uint32_t t0);
 void stream_RWspeed();
+void manual_set_louvers();
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // SETUP:
@@ -364,6 +366,7 @@ void process_main_menu() {
       Xbee.print("12 - TCS: Clear fault\n");
       Xbee.print("13 - TCS: Thermocouple wiring test\n");
       Xbee.print("14 - TCS: Live temperature stream on/off\n");
+      Xbee.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -382,6 +385,7 @@ void process_main_menu() {
       Serial.print("12 - TCS: Clear fault\n");
       Serial.print("13 - TCS: Thermocouple wiring test\n");
       Serial.print("14 - TCS: Live temperature stream on/off\n");
+      Serial.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -444,6 +448,10 @@ void process_main_menu() {
 
     case 13: // Thermocouple wiring test (checks the MAX31855 wires directly)
       tcs_run_wiring_test();
+      break;
+
+    case 15: // Move the louvers by hand (0 to 100 percent open)
+      manual_set_louvers();
       break;
 
     case 14: // Turn the live temperature stream on or off
@@ -1270,4 +1278,33 @@ void stream_RWspeed()
     }
   }
 } //end stream_RWspeed()
+
+/*---------------------------------------------------------------------------------------------*/
+// Manually Set Louvers (Thermal Control System bench test):
+/*---------------------------------------------------------------------------------------------*/
+/**
+ * @brief Asks the user how far to open the louvers (0 = closed, 100 = fully open) and moves them.
+ *
+ * Used to test the louver servo by hand. Waits up to 30 seconds for a number, then gives up so
+ * the rest of the program is not stuck forever. Values outside 0 to 100 are clamped.
+ */
+void manual_set_louvers() {
+  Serial.println("Enter louver position, 0 (closed) to 100 (fully open):");
+  Xbee.println("Enter louver position, 0 (closed) to 100 (fully open):");
+
+  uint32_t giveUpAt = millis() + 30000;
+  while (!Serial.available() && !Xbee.available()) {   // wait for the user to type a number
+    if (millis() > giveUpAt) {
+      Serial.println("[CAUTION] No input, louvers not moved.");
+      Xbee.println("[CAUTION] No input, louvers not moved.");
+      return;
+    }
+  }
+  delay(100); // let the whole number arrive
+
+  int percent = get_command_from_ground_station();
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  tcs_set_louvers_manual((float)percent);
+}
 
