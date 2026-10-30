@@ -41,8 +41,12 @@ enum TcsFaultReason {
 // Setup and the main "heartbeat" of the TCS
 /*---------------------------------------------------------------------------------------------*/
 
-/** Starts the thermocouple chip. Call once from setup(), BEFORE the SD card starts. */
-bool tcs_init(uint8_t thermocoupleChipSelectPin);
+/**
+ * Starts the two thermocouple chips (each chip reads one thermocouple). Call once from setup(), BEFORE the SD card starts.
+ * Thermocouple 1 is the panel and is the one the thermal control and the Peltier heater use.
+ * Thermocouple 2 is reported only (live stream and status); the control logic does not use it.
+ */
+bool tcs_init(uint8_t thermocouple1ChipSelectPin, uint8_t thermocouple2ChipSelectPin);
 
 /** Call this every pass through loop(). It reads the thermocouple and, if the TCS is on, runs the state machine. */
 void tcs_update();
@@ -73,6 +77,9 @@ const char*    tcs_fault_name(TcsFaultReason reason);
 
 /** Latest panel temperature in Celsius. NAN if the thermocouple has no valid reading. */
 float tcs_get_panel_temp_c();
+
+/** Latest temperature from thermocouple 2 in Celsius. NAN if it has no valid reading. Not used by the control logic. */
+float tcs_get_temp2_c();
 
 /** Temperature inside the MAX31855 chip itself (its "cold junction"), in Celsius. NAN if unknown. */
 float tcs_get_chip_temp_c();
@@ -128,7 +135,7 @@ void tcs_set_louvers_manual(float openPercent);
  * Turns the live temperature stream on or off. It is ON by default.
  *
  * While on, one line is sent every TCS_TELEMETRY_INTERVAL_MS to both USB serial and the XBee, like:
- *   TCS,t:12345,temp_C:23.45,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan,peltier_pct:0.0,peltier_target_C:nan
+ *   TCS,t:12345,temp_C:23.45,temp2_C:22.80,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan,peltier_pct:0.0,peltier_target_C:nan
  * Every value after the colon is a plain number ("nan" means "no valid reading"), so a plotting
  * program can read each one directly. state_id follows the order of TcsState:
  *   0=NORMAL 1=SUN_AVOID 2=COOLING 3=COLD_DETECTED 4=RECOVERY 5=FAULT
@@ -138,7 +145,7 @@ void tcs_set_telemetry(bool on);
 bool tcs_telemetry_enabled();
 
 /**
- * Wiring test for the thermocouple chip. Talks to the MAX31855 directly (without the library or the
+ * Wiring test for both thermocouple chips. Talks to each MAX31855 directly (without the library or the
  * SPI hardware) and explains in plain words what the wires are doing. Turn the TCS off first.
  */
 void tcs_run_wiring_test();

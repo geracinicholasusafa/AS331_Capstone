@@ -29,7 +29,9 @@ extern ESP32Encoder enc;                  // Reaction wheel encoder
 /*---------------------------------------------------------------------------------------------*/
 // 1. What the TCS remembers between calls (all private to this file)
 /*---------------------------------------------------------------------------------------------*/
-static Adafruit_MAX31855* thermocouple = nullptr;   // The thermocouple chip
+static Adafruit_MAX31855* thermocouple = nullptr;   // The thermocouple chip for thermocouple 1 (the panel; used for control)
+static Adafruit_MAX31855* thermocouple2 = nullptr;  // The second thermocouple chip (reported only, not used for control)
+static float temp2C = NAN;                          // Latest thermocouple 2 temperature (NAN = no valid reading)
 
 static bool           tcs_enabled = false;          // Is automatic control switched on?
 static TcsState       state = TCS_NORMAL;           // Which step we are in
@@ -166,6 +168,15 @@ static void read_thermocouple() {
     rateReferenceTempC = panelTempC;
     rateReferenceMs = now;
   }
+}
+
+/**
+ * Reads the second thermocouple. If the chip reports a problem the reading becomes "no reading" (NAN).
+ * This is for information only: a problem here does not stop the thermal control.
+ */
+static void read_thermocouple2() {
+  if (thermocouple2 == nullptr) return;
+  temp2C = thermocouple2->readCelsius();   // NAN when the chip reports a fault
 }
 
 /** Turns the chip's fault code into a sentence that says what to check. */
@@ -433,18 +444,30 @@ static void run_state_machine() {
 // 6. Public functions (see tcs.h for what each one is for)
 /*---------------------------------------------------------------------------------------------*/
 
-bool tcs_init(uint8_t thermocoupleChipSelectPin) {
-  // Keep the chip "deselected" right away so it does not interfere with the SD card on the shared wires.
-  pinMode(thermocoupleChipSelectPin, OUTPUT);
-  digitalWrite(thermocoupleChipSelectPin, HIGH);
+bool tcs_init(uint8_t thermocouple1ChipSelectPin, uint8_t thermocouple2ChipSelectPin) {
+  // Keep both chips "deselected" right away so they do not interfere with the SD card on the shared wires.
+  pinMode(thermocouple1ChipSelectPin, OUTPUT);
+  digitalWrite(thermocouple1ChipSelectPin, HIGH);
+  pinMode(thermocouple2ChipSelectPin, OUTPUT);
+  digitalWrite(thermocouple2ChipSelectPin, HIGH);
 
-  thermocouple = new Adafruit_MAX31855(thermocoupleChipSelectPin);
+  thermocouple = new Adafruit_MAX31855(thermocouple1ChipSelectPin);
+  thermocouple2 = new Adafruit_MAX31855(thermocouple2ChipSelectPin);
+
+  bool ok = true;
   if (!thermocouple->begin()) {
-    Serial.println("[WARN] MAX31855 thermocouple chip not responding. TCS will report a sensor failure.");
-    return false;
+    Serial.println("[WARN] MAX31855 #1 (panel) not responding. TCS will report a sensor failure.");
+    ok = false;
+  } else {
+    Serial.println("[INFO] MAX31855 #1 (panel) online.");
   }
-  Serial.println("[INFO] MAX31855 thermocouple online.");
-  return true;
+  if (!thermocouple2->begin()) {
+    Serial.println("[WARN] MAX31855 #2 not responding. Its temperature will show as nan.");
+    ok = false;
+  } else {
+    Serial.println("[INFO] MAX31855 #2 online.");
+  }
+  return ok;
 }
 
 /** Turns a number into text for the stream. Invalid readings become "nan" so a plot can skip them. */
@@ -464,6 +487,7 @@ static void send_telemetry_if_due() {
 
   String line = "TCS,t:" + String(now);
   line += ",temp_C:" + number_for_stream(panelTempC, 2);
+  line += ",temp2_C:" + number_for_stream(temp2C, 2);
   line += ",chip_C:" + number_for_stream(chipTempC, 2);
   line += ",rate_C_per_s:" + number_for_stream(tempRateCPerS, 2);
   line += ",state_id:" + String((int)state);
@@ -528,7 +552,8 @@ void tcs_update() {
   lastUpdateMs = millis();
 
   read_thermocouple();                    // always keep the temperature fresh, even when the TCS is off
-  run_peltier();                          // test heater: runs whether or not the TCS is on
+  read_thermocouple2();                   // second thermocouple: reported only
+  run_peltier();                        // test heater: runs whether or not the TCS is on
   if (!tcs_enabled) return;
 
   read_wheel_speed();
@@ -571,18 +596,19 @@ void tcs_clear_fault() {
 /**
  * Reads the 32-bit data word from the MAX31855 by wiggling the clock pin by hand ("bit-banging").
  * This avoids the SPI hardware and the library, so it tests the wires and the chip on their own.
+ * @param chipSelectPin which chip to talk to (thermocouple 1 or thermocouple 2)
  * @param dataPinMode INPUT_PULLUP or INPUT_PULLDOWN: what the ESP32 does to the data line when
  *        nothing is driving it. A connected, working chip ignores this; a loose wire does not.
  */
-static uint32_t bit_bang_read_word(int dataPinMode) {
+static uint32_t bit_bang_read_word(uint8_t chipSelectPin, int dataPinMode) {
   pinMode(SPI_SCK, OUTPUT);
   digitalWrite(SPI_SCK, LOW);
   pinMode(SPI_MISO, dataPinMode);
-  pinMode(MAX31855_CS_PIN, OUTPUT);
-  digitalWrite(MAX31855_CS_PIN, HIGH);
+  pinMode(chipSelectPin, OUTPUT);
+  digitalWrite(chipSelectPin, HIGH);
   delay(5);
 
-  digitalWrite(MAX31855_CS_PIN, LOW);                 // start talking to the chip
+  digitalWrite(chipSelectPin, LOW);                   // start talking to the chip
   delayMicroseconds(10);
   uint32_t word = 0;
   for (int bit = 0; bit < 32; bit++) {
@@ -592,21 +618,18 @@ static uint32_t bit_bang_read_word(int dataPinMode) {
     digitalWrite(SPI_SCK, LOW);
     delayMicroseconds(10);
   }
-  digitalWrite(MAX31855_CS_PIN, HIGH);                // stop talking to the chip
+  digitalWrite(chipSelectPin, HIGH);                  // stop talking to the chip
   return word;
 }
 
-void tcs_run_wiring_test() {
-  if (tcs_enabled) {
-    say("[TCS] Turn the TCS off first (command 10), then run the wiring test.");
-    return;
-  }
-  say("[TCS] Thermocouple wiring test (reads the chip two ways, takes about a second)...");
+/** Tests one chip's wiring and prints what it found. */
+static void wiring_test_one_chip(const char* chipName, uint8_t chipSelectPin) {
+  say(String("[TCS] --- ") + chipName + " (chip-select GPIO " + String(chipSelectPin) + ") ---");
 
   SPI.end();                                          // free the pins so we can wiggle them by hand
   digitalWrite(SD_CS_PIN, HIGH);                      // keep the SD card quiet during the test
-  uint32_t withPullUp   = bit_bang_read_word(INPUT_PULLUP);
-  uint32_t withPullDown = bit_bang_read_word(INPUT_PULLDOWN);
+  uint32_t withPullUp   = bit_bang_read_word(chipSelectPin, INPUT_PULLUP);
+  uint32_t withPullDown = bit_bang_read_word(chipSelectPin, INPUT_PULLDOWN);
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);             // give the pins back to the SPI hardware
 
   say(String("[TCS] Data line pulled UP:   0x") + String(withPullUp, HEX));
@@ -614,8 +637,8 @@ void tcs_run_wiring_test() {
 
   // Work out what that means.
   if (withPullUp == 0xFFFFFFFF && withPullDown == 0x00000000) {
-    say("[TCS] RESULT: the data line (DO) is FLOATING. Nothing is driving it. Check: DO wire reaches GPIO 19, "
-        "CS wire reaches GPIO 27, the chip has 3.3V and GND, and the breadboard rows are actually connected.");
+    say(String("[TCS] RESULT: the data line (DO) is FLOATING. Nothing is driving it. Check: DO wire reaches GPIO 19, "
+        "this chip's CS wire reaches GPIO ") + String(chipSelectPin) + ", the chip has 3.3V and GND, and the breadboard rows are actually connected.");
   } else if (withPullUp == 0xFFFFFFFF && withPullDown == 0xFFFFFFFF) {
     say("[TCS] RESULT: the data line is stuck HIGH. DO may be touching 3.3V, or the wrong pin is wired to 3.3V.");
   } else if (withPullUp == 0x00000000 && withPullDown == 0x00000000) {
@@ -627,11 +650,22 @@ void tcs_run_wiring_test() {
   }
 }
 
+void tcs_run_wiring_test() {
+  if (tcs_enabled) {
+    say("[TCS] Turn the TCS off first (command 10), then run the wiring test.");
+    return;
+  }
+  say("[TCS] Thermocouple wiring test (checks both chips, takes a few seconds)...");
+  wiring_test_one_chip("Thermocouple chip #1 (panel)", MAX31855_CS_PIN);
+  wiring_test_one_chip("Thermocouple chip #2", MAX31855_2_CS_PIN);
+}
+
 bool           tcs_is_enabled()             { return tcs_enabled; }
 TcsState       tcs_get_state()              { return state; }
 TcsFaultReason tcs_get_fault_reason()       { return faultReason; }
 float          tcs_get_panel_temp_c()       { return panelTempC; }
 float          tcs_get_chip_temp_c()        { return chipTempC; }
+float          tcs_get_temp2_c()            { return temp2C; }
 float          tcs_get_temp_rate_c_per_s()  { return tempRateCPerS; }
 float          tcs_get_louver_percent()     { return louverPercent; }
 float          tcs_get_vent_error_deg()     { return ventErrorDeg; }
@@ -664,6 +698,7 @@ const char* tcs_fault_name(TcsFaultReason r) {
 void tcs_print_status() {
   String line = String("[TCS] ") + (tcs_enabled ? "ON" : "OFF") + ", state=" + tcs_state_name(state);
   line += ", panel=" + (isnan(panelTempC) ? String("n/a") : String(panelTempC, 2) + "C");
+  line += ", temp2=" + (isnan(temp2C) ? String("n/a") : String(temp2C, 2) + "C");
   line += ", rate=" + String(tempRateCPerS, 2) + "C/s";
   line += ", louvers=" + String(louverPercent, 0) + "%";
   line += ", wheel=" + String(wheelRpm, 0) + "RPM";

@@ -22,7 +22,7 @@
  * - Sun sensor (4-channel analog inputs)
  * - XBee radio module (UART at 9600 baud)
  * - SD card module (SPI)
- * - WS2812 RGB LED and digital status LED
+ * - WS2812 RGB LED
  * 
  * @section dependencies External Libraries
  * - greiman/SdFat@^2.3.1 - SD card file system
@@ -37,7 +37,7 @@
  * | 0   | Stop reaction wheel |
  * | 1   | Display options menu |
  * | 2   | Query XBee RSSI |
- * | 3   | Toggle status LED |
+ * | 3   | (removed: GPIO 13 is now the 2nd thermocouple chip-select) |
  * | 4   | Get battery telemetry (V, SOC, charge rate) |
  * | 5   | Manually set reaction wheel throttle (-100 to 100%) |
  * | 6   | Run Lab 6 test (Attitude Determination) |
@@ -159,10 +159,10 @@ void setup() {
 
   Wire.begin(); // Initialize I2C communication
 
-  // Initialize built-in RGB LED (WS2812) and STAT LED
+  // Initialize built-in RGB LED (WS2812). The plain status LED on GPIO 13 is no longer used,
+  // because that pin is now the chip-select for the second thermocouple.
   // #define RGB_BUILTIN  2
   pinMode(RGB_BUILTIN, OUTPUT);
-  pinMode(LED_BUILTIN, OUTPUT);
   neopixelWrite(RGB_BUILTIN, 255, 0, 0); // Default to red (R=255, G=0, B=0)
 
   //----------------------------------------------
@@ -177,7 +177,7 @@ void setup() {
   // Initialize thermocouple chip (TCS). Done BEFORE the SD card so the chip's select line
   // is held high and cannot disturb the SD card on the shared SPI wires.
   //----------------------------------------------
-  tcs_init(MAX31855_CS_PIN);
+  tcs_init(MAX31855_CS_PIN, MAX31855_2_CS_PIN);
 
   //----------------------------------------------
   // Initialize SD Card
@@ -321,7 +321,7 @@ int get_command_from_ground_station()
  * - 0: Stop reaction wheel motor
  * - 1: Print options menu
  * - 2: Get satellite RSSI
- * - 3: Toggle LED
+ * - 3: (removed, was Toggle LED)
  * - 4: Get battery telemetry (voltage, SOC, charge rate)
  * - 5: Manually set reaction wheel speed (throttle %)
  * - 6: Run Lab 6 - Attitude Determination test
@@ -363,7 +363,6 @@ void process_main_menu() {
       Xbee.print("0 - Stop reation wheel\n");
       Xbee.print("1 - Print Options Menu\n");
       Xbee.print("2 - Get RSSI\n");
-      Xbee.print("3 - Toggle LED\n");
       Xbee.print("4 - Get Battery State (V, SOC, dSOC/dt) \n");
       Xbee.print("5 - Set Motor Throttle Percent (-100...100)\n");
       Xbee.print("6 - Lab 6: Run Test\n");
@@ -384,7 +383,6 @@ void process_main_menu() {
       Serial.print("0 - Stop reation wheel\n");
       Serial.print("1 - Print Options Menu\n");
       Serial.print("2 - Get RSSI\n");
-      Serial.print("3 - Toggle LED\n");
       Serial.print("4 - Get Battery State (V, SOC, dSOC/dt) \n");
       Serial.print("5 - Set Motor Throttle Percent (-100...100)\n");
       Serial.print("6 - Lab 6: Run Test\n");
@@ -407,12 +405,7 @@ void process_main_menu() {
       get_sat_rssi();
       break;
 
-    case 3:
-      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-      Serial.print("LED is now ");
-      Serial.println(digitalRead(LED_BUILTIN) ? "LED ON" : "LED OFF");
-      Xbee.println(digitalRead(LED_BUILTIN) ? " LED ON" : " LED OFF");
-      break;
+    // Command 3 (toggle status LED) was removed: GPIO 13 is now the chip-select for the second thermocouple.
 
     case 4:
       send_battery_telemetry();
