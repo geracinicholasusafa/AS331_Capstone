@@ -45,6 +45,8 @@
 // --- Timing ---
 #define TCS_UPDATE_INTERVAL_MS   500    // How often the TCS reads sensors and decides what to do
 #define TCS_TELEMETRY_INTERVAL_MS 1000  // How often a temperature line is sent for the live plot (1000 = once per second)
+#define TCS_LOG_INTERVAL_MS      1000   // How often a row is written to the SD card CSV log (1000 = once per second)
+#define TCS_LOG_FILE_PREFIX      "TCS_log" // Log files are named TCS_log_data001.csv, TCS_log_data002.csv, ... (a new one each time logging starts)
 #define TCS_LOUVER_MAX_OPEN_MS   120000 // Louvers may stay open this long while cooling, then they close (PROPOSED, not confirmed)
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
 #define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)

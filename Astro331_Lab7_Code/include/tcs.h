@@ -131,6 +131,27 @@ float tcs_get_peltier_target_c();        ///< The temperature it is aiming for. 
  */
 void tcs_set_louvers_manual(float openPercent);
 
+/*---------------------------------------------------------------------------------------------*/
+// SD card CSV log
+/*---------------------------------------------------------------------------------------------*/
+
+/**
+ * Starts writing a new CSV file on the SD card (TCS_log_data001.csv, then 002, ...), one row every
+ * TCS_LOG_INTERVAL_MS. Columns:
+ *   time_ms, elapsed_s, temp1_C, temp2_C, rate_C_per_s, state, state_id, tcs_on,
+ *   louver_pct, wheel_rpm, vent_error_deg, peltier_pct, peltier_target_C
+ * temp1_C is thermocouple 1 (the panel), temp2_C is thermocouple 2. An empty cell means no valid reading.
+ * Every row is saved straight away, so pulling the power loses at most one row.
+ * Logging pauses while a Lab 6/7 test is running (those tests take over the processor).
+ * @return false if the file could not be created.
+ */
+bool tcs_start_logging();
+
+/** Closes the log file. Always stop logging before removing the SD card. */
+void tcs_stop_logging();
+
+bool tcs_is_logging();
+
 /**
  * Turns the live temperature stream on or off. It is ON by default.
  *

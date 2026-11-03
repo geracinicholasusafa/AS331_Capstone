@@ -51,6 +51,7 @@
  * | 15  | TCS: Move louvers by hand to 0-100 percent open (run with TCS off) |
  * | 16  | Peltier test heater: hold the panel at a chosen temperature (0 = off) |
  * | 17  | Peltier test heater: fixed power percent for bench testing (0 = off) |
+ * | 18  | TCS: Start/stop the SD card CSV log (TCS_log_dataNNN.csv) |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -377,6 +378,7 @@ void process_main_menu() {
       Xbee.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
       Xbee.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
       Xbee.print("17 - Peltier heater: fixed power percent (0 = off)\n");
+      Xbee.print("18 - TCS: Start/stop SD card CSV log\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -397,6 +399,7 @@ void process_main_menu() {
       Serial.print("15 - TCS: Move louvers by hand (0-100 percent open)\n");
       Serial.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
       Serial.print("17 - Peltier heater: fixed power percent (0 = off)\n");
+      Serial.print("18 - TCS: Start/stop SD card CSV log\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -466,6 +469,10 @@ void process_main_menu() {
 
     case 17: // Peltier heater: run at a fixed percentage of power (bench test)
       set_peltier_power_from_user();
+      break;
+
+    case 18: // Start or stop the SD card CSV log (both thermocouples and the TCS state)
+      if (tcs_is_logging()) tcs_stop_logging(); else tcs_start_logging();
       break;
 
     case 14: // Turn the live temperature stream on or off

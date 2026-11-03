@@ -17,6 +17,7 @@
 #include <TB9051FTGMotorCarrier.h>        // Reaction wheel motor driver
 #include <ESP32Encoder.h>                 // Reaction wheel speed sensor
 #include "definitions.h"
+#include "sd_functions.h"                 // Creates the CSV log file on the SD card
 #include "tcs.h"
 
 /*---------------------------------------------------------------------------------------------*/
@@ -543,11 +544,92 @@ void tcs_set_louvers_manual(float openPercent) {
   say(String("[TCS] Louvers set to ") + String(louverPercent, 0) + "% open.");
 }
 
+/*---------------------------------------------------------------------------------------------*/
+// SD card CSV log
+// Writes one row per second to its own file on the SD card, so the data can be opened in Excel,
+// MATLAB or Python and plotted afterwards. Empty cells mean "no valid reading".
+/*---------------------------------------------------------------------------------------------*/
+
+static FsFile   logFile;               // The open log file
+static bool     loggingOn = false;     // Are we writing rows right now?
+static uint32_t logStartMs = 0;        // When logging started (so the file can show seconds since start)
+static uint32_t lastLogMs = 0;         // When the last row was written
+static uint32_t logRowCount = 0;       // How many rows have been written to this file
+static char     logFileName[40] = "";  // The file's name, to tell the user
+
+/** Turns a number into a CSV cell. Invalid readings become an empty cell, which plotting tools skip. */
+static String number_for_csv(float value, int decimals) {
+  return isnan(value) ? String("") : String(value, decimals);
+}
+
+/** Writes one row to the log file, if logging is on and it is time. */
+static void log_row_if_due() {
+  if (!loggingOn) return;
+  uint32_t now = millis();
+  if (now - lastLogMs < TCS_LOG_INTERVAL_MS) return;
+  lastLogMs = now;
+
+  String row = String(now);
+  row += "," + String((now - logStartMs) / 1000.0f, 1);   // seconds since logging started: handy for the x-axis
+  row += "," + number_for_csv(panelTempC, 2);
+  row += "," + number_for_csv(temp2C, 2);
+  row += "," + number_for_csv(tempRateCPerS, 2);
+  row += "," + String(tcs_state_name(state));
+  row += "," + String((int)state);
+  row += "," + String(tcs_enabled ? 1 : 0);
+  row += "," + number_for_csv(louverPercent, 0);
+  row += "," + number_for_csv(wheelRpm, 1);
+  row += "," + number_for_csv(ventErrorDeg, 1);
+  row += "," + number_for_csv(peltierPowerPercent, 1);
+  row += "," + number_for_csv(peltierTargetC, 1);
+
+  if (logFile.println(row) == 0) {      // the card did not accept the row (removed, full, or failing)
+    loggingOn = false;
+    logFile.close();
+    say("[TCS] ERROR: could not write to the SD card, logging stopped.");
+    return;
+  }
+  logFile.flush();                      // save every row, so pulling the power loses at most one second
+  logRowCount++;
+}
+
+bool tcs_start_logging() {
+  if (loggingOn) {
+    say(String("[TCS] Already logging to ") + logFileName);
+    return true;
+  }
+  if (!sd_createDataFile(&logFile, TCS_LOG_FILE_PREFIX)) {
+    say("[TCS] ERROR: could not create a log file on the SD card.");
+    return false;
+  }
+  logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,"
+                  "louver_pct,wheel_rpm,vent_error_deg,peltier_pct,peltier_target_C");
+  logFile.flush();
+  logFile.getName(logFileName, sizeof(logFileName));
+
+  loggingOn = true;
+  logStartMs = millis();
+  lastLogMs = 0;                        // write the first row straight away
+  logRowCount = 0;
+  say(String("[TCS] Logging started: ") + logFileName);
+  return true;
+}
+
+void tcs_stop_logging() {
+  if (!loggingOn) return;
+  loggingOn = false;
+  logFile.close();
+  say(String("[TCS] Logging stopped: ") + logFileName + " (" + String(logRowCount) + " rows)");
+}
+
+bool tcs_is_logging() { return loggingOn; }
+
 void tcs_set_telemetry(bool on) { telemetryOn = on; }
 bool tcs_telemetry_enabled()    { return telemetryOn; }
 
 void tcs_update() {
   send_telemetry_if_due();                                        // live plot data, once per second
+  log_row_if_due();                                               // SD card CSV log, once per second (if started)
   if (millis() - lastUpdateMs < TCS_UPDATE_INTERVAL_MS) return;   // not time yet
   lastUpdateMs = millis();
 
@@ -705,6 +787,7 @@ void tcs_print_status() {
   line += ", peltier=" + String(peltierPowerPercent, 0) + "%" + (isnan(peltierTargetC) ? String("") : " (target " + String(peltierTargetC, 1) + "C)");
   line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
+  line += String(", logging=") + (loggingOn ? logFileName : "off");
   say(line);
   if (isnan(panelTempC)) {   // explain why there is no temperature
     say(String("[TCS] No temperature: ") + describe_thermocouple_fault(lastFaultBits));
