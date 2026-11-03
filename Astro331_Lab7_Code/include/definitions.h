@@ -59,7 +59,7 @@
 // --- Louver servo: Tower Pro SG92R micro servo ---
 // A servo is told where to point by a repeating pulse (20 ms apart); the pulse LENGTH sets the angle.
 // Power: the servo needs 5 V (the board's USB/5V pin), NOT 3.3 V, and its ground must be shared with the board.
-#define TCS_LOUVER_SERVO_PIN        4     // Signal wire GPIO (PROPOSED: the only fully free output pin; confirm wiring)
+#define TCS_LOUVER_SERVO_PIN        4     // Signal wire GPIO for the single louver servo (confirmed by the team)
 #define TCS_SERVO_PULSE_MIN_US      500   // Pulse length at 0 degrees, in microseconds (SG92R datasheet: about 500)
 #define TCS_SERVO_PULSE_MAX_US      2400  // Pulse length at 180 degrees, in microseconds (SG92R datasheet: about 2400)
 #define TCS_LOUVER_CLOSED_ANGLE_DEG 0.0   // Servo angle when the louvers are closed (PROPOSED, depends on how it is mounted)
