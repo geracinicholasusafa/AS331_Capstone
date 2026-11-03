@@ -1,0 +1,421 @@
+<!doctype html>
+<!--
+  KestrelSAT Heater Control
+  =========================
+  A small control page for the Peltier test heater and the two thermocouples.
+  Open this file in Google Chrome or Microsoft Edge (they can talk to USB serial ports; Firefox and Safari cannot).
+  Nothing to install.
+
+  How it works, in plain words:
+    - "Connect" asks you to pick the board's COM port, then listens to everything the board sends.
+    - The board sends a "TCS,..." line once per second. This page reads the temperatures out of it and plots them.
+    - The heater buttons send the same commands you would type in the serial monitor:
+        17 then a number  -> run the heater at that fixed power percent (0 = off)
+        16 then a number  -> hold the panel at that temperature in C (0 = off)
+      The firmware does all the safety checks (45 C cut-off, sensor failure cut-off); this page only asks.
+    - Only one program can use a COM port at a time. Close the PlatformIO serial monitor and the
+      KestrelSAT GUI before connecting here.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heater Control</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6675; --border: #d9dde4;
+    --accent: #2563eb; --danger: #c62828; --ok: #2e7d32;
+    --line1: #d9480f; --line2: #1971c2; --target: #6b7280; --heat: #e8590c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --panel: #1c2027; --text: #e6e9ee; --muted: #9aa3b2; --border: #313742;
+      --accent: #5b8def; --danger: #ef5350; --ok: #66bb6a;
+      --line1: #ff8a4c; --line2: #5aa9ff; --target: #9aa3b2; --heat: #ff922b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, select, input[type=number], input[type=text] {
+    font: inherit; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input[type=number] { width: 90px; }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--heat); }
+  .status { color: var(--muted); }
+  .status.on { color: var(--ok); font-weight: 600; }
+  .readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .readout { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .readout .label { font-size: 12px; color: var(--muted); }
+  .readout .value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
+  canvas { width: 100%; display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .swatch { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 6px; }
+  #console { height: 180px; overflow-y: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; background: var(--bg);
+             border: 1px solid var(--border); border-radius: 7px; padding: 8px; white-space: pre-wrap; word-break: break-all; }
+  .note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  .warn { color: var(--danger); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>KestrelSAT Heater Control</h1>
+
+  <!-- 1. Connection -->
+  <section class="panel">
+    <h2>Connection</h2>
+    <div class="row">
+      <label>Link:
+        <select id="baud">
+          <option value="115200">USB cable (115200)</option>
+          <option value="9600">XBee radio (9600)</option>
+        </select>
+      </label>
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <span id="connStatus" class="status">Not connected</span>
+    </div>
+    <p class="note" id="browserNote"></p>
+  </section>
+
+  <!-- 2. Live numbers -->
+  <section class="panel">
+    <h2>Live readings</h2>
+    <div class="readouts">
+      <div class="readout"><div class="label">Thermocouple 1 (panel)</div><div class="value" id="vTemp1">--</div></div>
+      <div class="readout"><div class="label">Thermocouple 2</div><div class="value" id="vTemp2">--</div></div>
+      <div class="readout"><div class="label">Heater power</div><div class="value" id="vHeat">--</div></div>
+      <div class="readout"><div class="label">Heater target</div><div class="value" id="vTarget">--</div></div>
+      <div class="readout"><div class="label">TCS state</div><div class="value" id="vState" style="font-size:17px">--</div></div>
+    </div>
+  </section>
+
+  <!-- 3. Heater control -->
+  <section class="panel">
+    <h2>Heater</h2>
+    <div class="two">
+      <div>
+        <strong>Fixed power</strong>
+        <div class="row" style="margin-top:8px">
+          <input type="range" id="powerSlider" min="0" max="100" step="5" value="0">
+          <span id="powerLabel" style="min-width:48px; font-variant-numeric: tabular-nums">0%</span>
+        </div>
+        <p class="note">Let go of the slider to send it. Start low (about 20%) and watch the temperature.</p>
+      </div>
+      <div>
+        <strong>Hold a temperature</strong>
+        <div class="row" style="margin-top:8px">
+          <input type="number" id="targetInput" min="15" max="40" step="0.5" value="30"> &deg;C
+          <button id="targetBtn">Hold</button>
+        </div>
+        <p class="note">15 to 40 &deg;C. The heater can only heat, so a target below the panel temperature does nothing.</p>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="offBtn" class="danger">HEATER OFF</button>
+      <span id="heatWarn"></span>
+    </div>
+  </section>
+
+  <!-- 4. Plots -->
+  <section class="panel">
+    <h2>Temperature (last 10 minutes)</h2>
+    <canvas id="tempChart" height="260"></canvas>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--line1)"></span>Thermocouple 1 (panel)</span>
+      <span><span class="swatch" style="background:var(--line2)"></span>Thermocouple 2</span>
+      <span><span class="swatch" style="background:var(--target)"></span>Heater target</span>
+    </div>
+    <h2 style="margin-top:16px">Heater power (%)</h2>
+    <canvas id="heatChart" height="110"></canvas>
+  </section>
+
+  <!-- 5. Data + console -->
+  <section class="panel">
+    <h2>Data and messages</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="logBtn">Start / stop SD card log (18)</button>
+      <button id="statusBtn">Board status (11)</button>
+      <button id="saveBtn">Save what this page received as CSV</button>
+      <button id="clearBtn">Clear plot</button>
+    </div>
+    <div id="console"></div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="cmdInput" placeholder="Send any command, e.g. 1 for the menu" style="flex:1; min-width:180px">
+      <button id="sendBtn">Send</button>
+    </div>
+  </section>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------------------------
+const WINDOW_SECONDS = 600;          // how much history the plots show (10 minutes)
+const MAX_CONSOLE_LINES = 300;       // how many message lines to keep on screen
+const WARN_TEMP_C = 40;              // show a warning above this (the board cuts the heater off at 45 C)
+const STATE_NAMES = ['NORMAL', 'SUN_AVOID', 'COOLING', 'COLD_DETECTED', 'RECOVERY', 'FAULT'];
+
+// ---------------------------------------------------------------------------------------------
+// What the page remembers
+// ---------------------------------------------------------------------------------------------
+let port = null, reader = null, writer = null, readLoopDone = null;
+let samples = [];                    // every TCS line received: {t, temp1, temp2, heat, target, state}
+let firstBoardTimeMs = null;         // board time of the first sample, so the plot starts at 0 s
+
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------------------------------------
+// Connecting to the board
+// ---------------------------------------------------------------------------------------------
+if (!('serial' in navigator)) {
+  $('browserNote').innerHTML = '<span class="warn">This browser cannot talk to serial ports. Open this file in Google Chrome or Microsoft Edge.</span>';
+  $('connectBtn').disabled = true;
+} else {
+  $('browserNote').textContent = 'Close the serial monitor and the KestrelSAT GUI first: only one program can use the port at a time. Connecting may restart the board.';
+}
+
+$('connectBtn').onclick = async () => {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: Number($('baud').value) });
+    writer = port.writable.getWriter();
+    setConnected(true);
+    readLoopDone = readLoop();
+  } catch (err) {
+    logLine('[page] Could not connect: ' + err.message);
+    port = null;
+  }
+};
+
+$('disconnectBtn').onclick = disconnect;
+
+async function disconnect() {
+  try {
+    if (reader) await reader.cancel();
+    if (readLoopDone) await readLoopDone;
+    if (writer) { writer.releaseLock(); writer = null; }
+    if (port) await port.close();
+  } catch (err) { logLine('[page] ' + err.message); }
+  port = null;
+  setConnected(false);
+}
+
+function setConnected(on) {
+  $('connStatus').textContent = on ? 'Connected' : 'Not connected';
+  $('connStatus').className = on ? 'status on' : 'status';
+  $('connectBtn').disabled = on;
+  $('disconnectBtn').disabled = !on;
+}
+
+/** Reads everything the board sends, splits it into lines, and handles each line. */
+async function readLoop() {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  reader = port.readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        if (line.length) handleLine(line);
+      }
+    }
+  } catch (err) {
+    logLine('[page] Connection lost: ' + err.message);
+  } finally {
+    reader.releaseLock();
+    reader = null;
+  }
+}
+
+/** Sends text to the board, one line per item (the board reads commands one line at a time). */
+async function send(...lines) {
+  if (!writer) { logLine('[page] Not connected.'); return; }
+  const text = lines.map(l => l + '\n').join('');
+  await writer.write(new TextEncoder().encode(text));
+  logLine('> ' + lines.join('  then  '));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Understanding what the board sends
+// ---------------------------------------------------------------------------------------------
+/** The board's live line looks like: TCS,t:12345,temp_C:23.45,temp2_C:22.80,...  */
+function handleLine(line) {
+  if (!line.startsWith('TCS,t:')) { logLine(line); return; }   // ordinary message: show it
+
+  const fields = {};
+  for (const part of line.slice(4).split(',')) {
+    const colon = part.indexOf(':');
+    if (colon > 0) fields[part.slice(0, colon)] = parseFloat(part.slice(colon + 1));   // "nan" becomes NaN
+  }
+  if (firstBoardTimeMs === null || fields.t < firstBoardTimeMs) firstBoardTimeMs = fields.t;   // board restarted -> restart the clock
+
+  const sample = {
+    t: (fields.t - firstBoardTimeMs) / 1000,
+    temp1: fields.temp_C, temp2: fields.temp2_C,
+    heat: fields.peltier_pct, target: fields.peltier_target_C,
+    state: fields.state_id
+  };
+  samples.push(sample);
+  updateReadouts(sample);
+  drawCharts();
+}
+
+function show(id, value, unit, decimals = 1) {
+  $(id).textContent = Number.isFinite(value) ? value.toFixed(decimals) + unit : '--';
+}
+
+function updateReadouts(s) {
+  show('vTemp1', s.temp1, ' °C', 2);
+  show('vTemp2', s.temp2, ' °C', 2);
+  show('vHeat', s.heat, ' %', 0);
+  show('vTarget', s.target, ' °C', 1);
+  $('vState').textContent = Number.isFinite(s.state) ? (STATE_NAMES[s.state] || '?') : '--';
+  $('heatWarn').innerHTML = (s.temp1 > WARN_TEMP_C)
+    ? '<span class="warn">Panel above ' + WARN_TEMP_C + ' °C. The board cuts the heater at 45 °C.</span>' : '';
+}
+
+// ---------------------------------------------------------------------------------------------
+// Heater buttons
+// ---------------------------------------------------------------------------------------------
+$('powerSlider').oninput = () => { $('powerLabel').textContent = $('powerSlider').value + '%'; };
+$('powerSlider').onchange = () => send('17', $('powerSlider').value);   // fixed power
+
+$('targetBtn').onclick = () => {
+  const target = parseFloat($('targetInput').value);
+  if (!(target >= 15 && target <= 40)) { logLine('[page] Target must be between 15 and 40 °C.'); return; }
+  $('powerSlider').value = 0; $('powerLabel').textContent = '0%';
+  send('16', String(target));                                       // hold a temperature
+};
+
+$('offBtn').onclick = () => {
+  $('powerSlider').value = 0; $('powerLabel').textContent = '0%';
+  send('17', '0');                                                    // 0 power = off
+};
+
+// ---------------------------------------------------------------------------------------------
+// Other buttons
+// ---------------------------------------------------------------------------------------------
+$('logBtn').onclick = () => send('18');
+$('statusBtn').onclick = () => send('11');
+$('sendBtn').onclick = () => { const c = $('cmdInput').value.trim(); if (c) { send(c); $('cmdInput').value = ''; } };
+$('cmdInput').onkeydown = e => { if (e.key === 'Enter') $('sendBtn').onclick(); };
+$('clearBtn').onclick = () => { samples = []; firstBoardTimeMs = null; drawCharts(); };
+
+/** Downloads everything this page has received as a CSV file (empty cell = no valid reading). */
+$('saveBtn').onclick = () => {
+  const cell = v => Number.isFinite(v) ? v : '';
+  let csv = 'elapsed_s,temp1_C,temp2_C,heater_pct,heater_target_C,state\n';
+  for (const s of samples) {
+    csv += [s.t.toFixed(1), cell(s.temp1), cell(s.temp2), cell(s.heat), cell(s.target),
+            Number.isFinite(s.state) ? STATE_NAMES[s.state] : ''].join(',') + '\n';
+  }
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  link.download = 'heater_test_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
+  link.click();
+};
+
+function logLine(text) {
+  const box = $('console');
+  box.textContent += text + '\n';
+  const lines = box.textContent.split('\n');
+  if (lines.length > MAX_CONSOLE_LINES) box.textContent = lines.slice(-MAX_CONSOLE_LINES).join('\n');
+  box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drawing the plots (plain canvas, so the page works without internet)
+// ---------------------------------------------------------------------------------------------
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/**
+ * Draws lines on a canvas.
+ * series: [{key, color, dashed}], fixedRange: [min, max] or null for automatic.
+ */
+function drawChart(canvas, series, fixedRange, unit) {
+  const ratio = window.devicePixelRatio || 1;
+  if (!canvas.dataset.baseHeight) canvas.dataset.baseHeight = canvas.getAttribute('height');   // remember the size once
+  const width = canvas.clientWidth, height = Number(canvas.dataset.baseHeight);
+  canvas.width = width * ratio; canvas.height = height * ratio; canvas.style.height = height + 'px';
+  const g = canvas.getContext('2d');
+  g.scale(ratio, ratio);
+  g.clearRect(0, 0, width, height);
+
+  const left = 46, right = 10, top = 8, bottom = 22;
+  const plotW = width - left - right, plotH = height - top - bottom;
+  const now = samples.length ? samples[samples.length - 1].t : 0;
+  const tStart = Math.max(0, now - WINDOW_SECONDS), tEnd = Math.max(now, 30);
+  const shown = samples.filter(s => s.t >= tStart);
+
+  // Work out the up-down range.
+  let lo, hi;
+  if (fixedRange) { [lo, hi] = fixedRange; }
+  else {
+    const values = shown.flatMap(s => series.map(ser => s[ser.key])).filter(Number.isFinite);
+    lo = values.length ? Math.min(...values) : 20; hi = values.length ? Math.max(...values) : 30;
+    if (hi - lo < 4) { const mid = (hi + lo) / 2; lo = mid - 2; hi = mid + 2; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  }
+  const x = t => left + (t - tStart) / (tEnd - tStart) * plotW;
+  const y = v => top + (1 - (v - lo) / (hi - lo)) * plotH;
+
+  // Grid and labels.
+  g.strokeStyle = cssVar('--border'); g.fillStyle = cssVar('--muted');
+  g.font = '11px system-ui, sans-serif'; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (hi - lo) * i / 4, py = y(v);
+    g.beginPath(); g.moveTo(left, py); g.lineTo(width - right, py); g.stroke();
+    g.fillText(v.toFixed(fixedRange ? 0 : 1) + unit, 2, py + 4);
+  }
+  for (let i = 0; i <= 5; i++) {
+    const t = tStart + (tEnd - tStart) * i / 5;
+    g.fillText(Math.round(t) + ' s', x(t) - 10, height - 6);
+  }
+
+  // The lines. A missing reading breaks the line instead of drawing a fake value.
+  for (const ser of series) {
+    g.strokeStyle = cssVar(ser.color); g.lineWidth = 2;
+    g.setLineDash(ser.dashed ? [6, 4] : []);
+    g.beginPath();
+    let penDown = false;
+    for (const s of shown) {
+      const v = s[ser.key];
+      if (!Number.isFinite(v)) { penDown = false; continue; }
+      if (penDown) g.lineTo(x(s.t), y(v)); else { g.moveTo(x(s.t), y(v)); penDown = true; }
+    }
+    g.stroke();
+  }
+  g.setLineDash([]);
+}
+
+function drawCharts() {
+  drawChart($('tempChart'), [
+    { key: 'temp1', color: '--line1' },
+    { key: 'temp2', color: '--line2' },
+    { key: 'target', color: '--target', dashed: true }
+  ], null, '°');
+  drawChart($('heatChart'), [{ key: 'heat', color: '--heat' }], [0, 100], '%');
+}
+
+window.addEventListener('resize', drawCharts);
+drawCharts();
+</script>
+</body>
+</html>
