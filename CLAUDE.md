@@ -12,7 +12,7 @@ The TCS extends the Lab 6/7 firmware in `Astro331_Lab7_Code/`. Do not start a se
 
 ### TCS design (from README.docx and the team)
 
-- **There is no Mylar thermal surface and no solar heating.** The team's concept (which supersedes the older `README.docx` wording about `SUN_SEARCH` / `SOLAR_HEATING`) is that internal heat must be vented. The Sun is only used to decide which way to point the louvers.
+- **There is no Mylar thermal surface and no solar heating.** The team's concept (which supersedes the older `README.docx` wording about `SUN_SEARCH` / `SOLAR_HEATING`) is that internal heat must be vented. The Sun is only used to decide which way to point the louvers. The louvers are on the **-Y face**, which is 270 degrees in the sun-sensor frame (`TCS_LOUVER_FACE_ANGLE_DEG`; 0 = +X, 90 = +Y, 180 = -X, 270 = -Y).
 - **State machine**, non-blocking, called from `loop()`: `NORMAL`, `SUN_AVOID`, `COOLING`, `COLD_DETECTED`, `RECOVERY`, `FAULT`.
   - Too hot: `SUN_AVOID` keeps the louvers closed while the reaction wheel turns the satellite until the louvers face directly *away* from the brightest light (found with the 4 photoresistors). Then `COOLING` opens the louvers to vent. No bright light means vent immediately. If turning takes longer than `TCS_SUN_AVOID_TIMEOUT_MS`, vent anyway. If the louvers drift toward the light while venting, close them and turn again.
   - Too cold: close the louvers to hold heat in and wait for the satellite to warm up. No attitude control.

@@ -87,7 +87,7 @@
 // To vent heat, the louver face should point AWAY from the brightest light (toward cold space).
 #define TCS_SUN_MIN_LIGHT_COUNTS   600    // Sum of the 4 sensors (each 0 to 4095). Less than this = "no bright light seen", so no need to turn (PROPOSED, tune with a lamp)
 #define TCS_SUN_READS_TO_AVERAGE   5      // Readings averaged per sensor to smooth out noise
-#define TCS_LOUVER_FACE_ANGLE_DEG  0.0    // Direction (0 to 360 deg, in the sun-sensor frame) the louvers face (PROPOSED, confirm)
+#define TCS_LOUVER_FACE_ANGLE_DEG  270.0  // Direction the louvers face, in the sun-sensor frame (0 = +X, 90 = +Y, 180 = -X, 270 = -Y). The louvers are on the -Y face (confirmed by the team).
 #define TCS_VENT_ALIGN_TOL_DEG     15.0   // Within this many degrees of "directly away from the light" counts as aligned (PROPOSED)
 #define TCS_VENT_LOST_TOL_DEG      30.0   // While venting, drifting further off than this closes the louvers and turns again
 
