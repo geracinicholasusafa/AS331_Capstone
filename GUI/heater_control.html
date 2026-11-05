@@ -450,7 +450,7 @@ function drawCharts() {
 // ---------------------------------------------------------------------------------------------
 let latestView = { lightDir: NaN, lightTotal: NaN, px: NaN, mx: NaN, py: NaN, my: NaN, louver: NaN, ventError: NaN };
 let viewYaw = -0.6, viewPitch = 0.45;        // camera angles in radians; dragging changes them
-const LOUVER_SLATS = 5;
+const LOUVER_SLATS = 4;                 // the real satellite has four louvers
 
 function compassName(deg) {
   const names = ['+X', 'between +X and +Y', '+Y', 'between +Y and −X', '−X', 'between −X and −Y', '−Y', 'between −Y and +X'];
@@ -500,7 +500,23 @@ function drawCube() {
   const a = hasLight ? v.lightDir * Math.PI / 180 : 0;
   const toLight = [Math.cos(a), Math.sin(a), 0];
 
-  const polygons = [];   // everything to draw, sorted far-to-near so near things cover far things
+  // Drawing order (so near things cover far things):
+  //   1. parts mounted on faces that point AWAY from us (they are behind the cube)
+  //   2. the cube faces that point toward us
+  //   3. parts mounted on faces that point toward us
+  const facePolys = [], backParts = [], frontParts = [];
+  const pointsTowardUs = n => project(n.map(c => c * 0.01)).depth - project([0, 0, 0]).depth < 0;
+  const averageDepth = screen => screen.reduce((s, p) => s + p.depth, 0) / screen.length;
+  const lightOn = n => hasLight ? Math.max(0, n[0] * toLight[0] + n[1] * toLight[1] + n[2] * toLight[2]) : 0;
+  const shaded = (rgb, n) => { const k = 0.55 + 0.45 * lightOn(n); return `rgb(${rgb.map(c => Math.round(c * k)).join(',')})`; };
+
+  /** Adds a part (a flat shape) that is mounted on one face of the cube. */
+  function addPart(hostNormal, ownNormal, points, rgb, stroke) {
+    if (ownNormal && !pointsTowardUs(ownNormal)) return;               // a side of the motor turned away: skip it
+    const screen = points.map(project);
+    (pointsTowardUs(hostNormal) ? frontParts : backParts)
+      .push({ screen, depth: averageDepth(screen), fill: shaded(rgb, ownNormal || hostNormal), stroke });
+  }
 
   // The six faces of the cube (the cube spans -1 to +1 on each axis).
   const faces = [
@@ -508,35 +524,53 @@ function drawCube() {
     { n: [-1, 0, 0], pts: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]],   label: '−X' },
     { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y' },
     { n: [ 0,-1, 0], pts: [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]],   label: '−Y  louvers', louvers: true },
-    { n: [ 0, 0, 1], pts: [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],       label: '+Z' },
+    { n: [ 0, 0, 1], pts: [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],       label: '+Z  breadboard' },
     { n: [ 0, 0,-1], pts: [[-1,1,-1],[1,1,-1],[1,-1,-1],[-1,-1,-1]],   label: '' }
   ];
   for (const f of faces) {
+    if (!pointsTowardUs(f.n)) continue;                                // hide faces turned away
     const screen = f.pts.map(project);
-    const facingUs = project(f.n.map(c => c * 0.01)).depth - project([0, 0, 0]).depth < 0;   // hide faces turned away
-    if (!facingUs) continue;
-    const lit = hasLight ? Math.max(0, f.n[0] * toLight[0] + f.n[1] * toLight[1] + f.n[2] * toLight[2]) : 0;
     const base = f.louvers ? [70, 110, 160] : [150, 156, 166];          // louver face is blue-grey
-    const shade = 0.55 + 0.45 * lit;
-    polygons.push({ screen, depth: screen.reduce((s, p) => s + p.depth, 0) / 4,
-      fill: `rgb(${base.map(c => Math.round(c * shade)).join(',')})`, stroke: '#2b313b', label: f.label,
-      center: project(f.n.map(c => c * 1.0)) });
+    facePolys.push({ screen, depth: averageDepth(screen), fill: shaded(base, f.n), stroke: '#2b313b',
+      label: f.label, center: project(f.n) });
   }
 
-  // Louver slats on the -Y face. Closed = flat against the face, open (100%) = sticking straight out.
+  // Louvers on the -Y face: LOUVER_SLATS slats, each hinged along its TOP edge. Closed, the slat hangs
+  // flat against the face. Opening swings its BOTTOM edge outward and up; at 100% it sticks straight out.
   const open = Number.isFinite(v.louver) ? Math.max(0, Math.min(100, v.louver)) / 100 : 0;
-  const tilt = open * Math.PI / 2;
-  const halfSlat = 1 / LOUVER_SLATS * 0.9;
+  const swing = open * Math.PI / 2;
+  const slatPitch = 2 / LOUVER_SLATS, slatLength = slatPitch * 0.92;
   for (let i = 0; i < LOUVER_SLATS; i++) {
-    const zc = -1 + (2 * i + 1) / LOUVER_SLATS;                        // centre height of this slat
-    const dy = -Math.sin(tilt) * halfSlat, dz = Math.cos(tilt) * halfSlat;
-    const pts = [[-0.85, -1.03 + dy, zc - dz], [0.85, -1.03 + dy, zc - dz], [0.85, -1.03 - dy, zc + dz], [-0.85, -1.03 - dy, zc + dz]];
-    const screen = pts.map(project);
-    polygons.push({ screen, depth: screen.reduce((s, p) => s + p.depth, 0) / 4 - 0.01,
-      fill: 'rgb(205,215,228)', stroke: '#3b4656' });
+    const hingeZ = -1 + (i + 1) * slatPitch - 0.03;                     // top edge of this slat
+    const outY = -1.03 - Math.sin(swing) * slatLength;                  // where the bottom edge has swung to
+    const bottomZ = hingeZ - Math.cos(swing) * slatLength;
+    addPart([0, -1, 0], null,
+      [[-0.85, -1.03, hingeZ], [0.85, -1.03, hingeZ], [0.85, outY, bottomZ], [-0.85, outY, bottomZ]],
+      [205, 215, 228], '#3b4656');
   }
 
-  polygons.sort((p, q) => q.depth - p.depth);
+  // Breadboard on the top (+Z) face: two halves with the centre channel between them.
+  for (const [x0, x1] of [[-0.9, -0.05], [0.05, 0.9]]) {
+    addPart([0, 0, 1], null, [[x0, -0.9, 1.02], [x1, -0.9, 1.02], [x1, 0.9, 1.02], [x0, 0.9, 1.02]],
+      [240, 240, 236], '#8a8f98');
+  }
+
+  // Reaction wheel motor in the top-right corner of the top face (the +X, +Y corner seen from the louver side).
+  const motor = { x: 0.6, y: 0.6, r: 0.28, bottom: 1.03, top: 1.38, sides: 16 };
+  const ring = z => Array.from({ length: motor.sides }, (_, k) => {
+    const t = k / motor.sides * Math.PI * 2;
+    return [motor.x + motor.r * Math.cos(t), motor.y + motor.r * Math.sin(t), z];
+  });
+  const lower = ring(motor.bottom), upper = ring(motor.top);
+  for (let k = 0; k < motor.sides; k++) {
+    const j = (k + 1) % motor.sides, t = (k + 0.5) / motor.sides * Math.PI * 2;
+    addPart([0, 0, 1], [Math.cos(t), Math.sin(t), 0], [lower[k], lower[j], upper[j], upper[k]], [70, 74, 82], '#2a2d33');
+  }
+  addPart([0, 0, 1], [0, 0, 1], upper, [110, 116, 126], '#2a2d33');
+
+  const farToNear = (p, q) => q.depth - p.depth;
+  backParts.sort(farToNear); facePolys.sort(farToNear); frontParts.sort(farToNear);
+  const polygons = [...backParts, ...facePolys, ...frontParts];
 
   // The light source, drawn before or after the cube depending on whether it is behind it.
   const sunPos = toLight.map(c => c * 3.4);
