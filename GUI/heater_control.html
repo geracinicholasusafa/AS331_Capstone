@@ -101,6 +101,24 @@
     </div>
   </section>
 
+  <!-- 2b. 3D view of the satellite and the light -->
+  <section class="panel">
+    <h2>Satellite and light (3D)</h2>
+    <div class="two" style="grid-template-columns: 2fr 1fr; align-items: start">
+      <div>
+        <canvas id="cubeView" height="340" style="cursor: grab; touch-action: none"></canvas>
+        <p class="note">Drag to turn the view. The cube stays still and the light moves around it, because the
+          light sensors measure where the light is <em>relative to the satellite</em>.</p>
+      </div>
+      <div class="readouts" style="grid-template-columns: 1fr">
+        <div class="readout"><div class="label">Light comes from</div><div class="value" id="vLightDir" style="font-size:18px">--</div></div>
+        <div class="readout"><div class="label">Louvers (on the &minus;Y face)</div><div class="value" id="vLouver" style="font-size:18px">--</div></div>
+        <div class="readout"><div class="label">Louvers pointed away from light?</div><div class="value" id="vAim" style="font-size:18px">--</div></div>
+        <div class="readout"><div class="label">Light sensors +X / &minus;X / +Y / &minus;Y</div><div class="value" id="vLightRaw" style="font-size:15px">--</div></div>
+      </div>
+    </div>
+  </section>
+
   <!-- 3. Heater control -->
   <section class="panel">
     <h2>Heater</h2>
@@ -275,6 +293,15 @@ function handleLine(line) {
   samples.push(sample);
   updateReadouts(sample);
   drawCharts();
+
+  // The 3D view only needs the latest numbers.
+  latestView = {
+    lightDir: fields.light_dir_deg, lightTotal: fields.light_total,
+    px: fields.light_px, mx: fields.light_mx, py: fields.light_py, my: fields.light_my,
+    louver: fields.louver_pct, ventError: fields.vent_error_deg
+  };
+  updateViewReadouts();
+  drawCube();
 }
 
 function show(id, value, unit, decimals = 1) {
@@ -414,8 +441,175 @@ function drawCharts() {
   drawChart($('heatChart'), [{ key: 'heat', color: '--heat' }], [0, 100], '%');
 }
 
-window.addEventListener('resize', drawCharts);
+// ---------------------------------------------------------------------------------------------
+// 3D view of the CubeSat and the incoming light (plain canvas, no internet needed)
+//
+// Directions match the firmware's light sensors: +X is 0 degrees, +Y is 90, -X is 180, -Y is 270,
+// and +Z is "up". The louvers are on the -Y face. The light arrow points the way the light travels,
+// from the light toward the satellite.
+// ---------------------------------------------------------------------------------------------
+let latestView = { lightDir: NaN, lightTotal: NaN, px: NaN, mx: NaN, py: NaN, my: NaN, louver: NaN, ventError: NaN };
+let viewYaw = -0.6, viewPitch = 0.45;        // camera angles in radians; dragging changes them
+const LOUVER_SLATS = 5;
+
+function compassName(deg) {
+  const names = ['+X', 'between +X and +Y', '+Y', 'between +Y and −X', '−X', 'between −X and −Y', '−Y', 'between −Y and +X'];
+  return names[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}
+
+function updateViewReadouts() {
+  const v = latestView;
+  $('vLightDir').textContent = Number.isFinite(v.lightDir) ? v.lightDir.toFixed(0) + '° (' + compassName(v.lightDir) + ')' : 'Too dark to tell';
+  $('vLouver').textContent = Number.isFinite(v.louver) ? v.louver.toFixed(0) + '% open' : '--';
+  if (Number.isFinite(v.ventError)) {
+    const off = Math.abs(v.ventError);
+    $('vAim').textContent = off < 15 ? 'Yes (' + off.toFixed(0) + '° off)' : 'No, ' + off.toFixed(0) + '° off';
+  } else {
+    $('vAim').textContent = 'No bright light';
+  }
+  const raw = [v.px, v.mx, v.py, v.my].map(n => Number.isFinite(n) ? n.toFixed(0) : '--');
+  $('vLightRaw').textContent = raw.join(' / ');
+}
+
+/** Turns a 3D point into a spot on the screen, using the current camera angles. */
+function makeProjector(width, height) {
+  const cy = Math.cos(viewYaw), sy = Math.sin(viewYaw), cp = Math.cos(viewPitch), sp = Math.sin(viewPitch);
+  const scale = Math.min(width, height) * 0.2, distance = 9;
+  return p => {
+    const x1 = p[0] * cy - p[1] * sy, y1 = p[0] * sy + p[1] * cy;      // spin around the up axis
+    const y2 = y1 * cp - p[2] * sp,   z2 = y1 * sp + p[2] * cp;        // tip toward or away from us
+    const perspective = distance / (distance + y2);                    // far things look smaller
+    return { x: width / 2 + x1 * scale * perspective, y: height / 2 - z2 * scale * perspective, depth: y2, perspective };
+  };
+}
+
+function drawCube() {
+  const canvas = $('cubeView');
+  if (!canvas.dataset.baseHeight) canvas.dataset.baseHeight = canvas.getAttribute('height');
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = Number(canvas.dataset.baseHeight);
+  canvas.width = width * ratio; canvas.height = height * ratio; canvas.style.height = height + 'px';
+  const g = canvas.getContext('2d');
+  g.scale(ratio, ratio);
+  g.clearRect(0, 0, width, height);
+  const project = makeProjector(width, height);
+  const v = latestView;
+
+  // Direction the light comes FROM, as a 3D arrow in the satellite's flat plane.
+  const hasLight = Number.isFinite(v.lightDir);
+  const a = hasLight ? v.lightDir * Math.PI / 180 : 0;
+  const toLight = [Math.cos(a), Math.sin(a), 0];
+
+  const polygons = [];   // everything to draw, sorted far-to-near so near things cover far things
+
+  // The six faces of the cube (the cube spans -1 to +1 on each axis).
+  const faces = [
+    { n: [ 1, 0, 0], pts: [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]],       label: '+X' },
+    { n: [-1, 0, 0], pts: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]],   label: '−X' },
+    { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y' },
+    { n: [ 0,-1, 0], pts: [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]],   label: '−Y  louvers', louvers: true },
+    { n: [ 0, 0, 1], pts: [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],       label: '+Z' },
+    { n: [ 0, 0,-1], pts: [[-1,1,-1],[1,1,-1],[1,-1,-1],[-1,-1,-1]],   label: '' }
+  ];
+  for (const f of faces) {
+    const screen = f.pts.map(project);
+    const facingUs = project(f.n.map(c => c * 0.01)).depth - project([0, 0, 0]).depth < 0;   // hide faces turned away
+    if (!facingUs) continue;
+    const lit = hasLight ? Math.max(0, f.n[0] * toLight[0] + f.n[1] * toLight[1] + f.n[2] * toLight[2]) : 0;
+    const base = f.louvers ? [70, 110, 160] : [150, 156, 166];          // louver face is blue-grey
+    const shade = 0.55 + 0.45 * lit;
+    polygons.push({ screen, depth: screen.reduce((s, p) => s + p.depth, 0) / 4,
+      fill: `rgb(${base.map(c => Math.round(c * shade)).join(',')})`, stroke: '#2b313b', label: f.label,
+      center: project(f.n.map(c => c * 1.0)) });
+  }
+
+  // Louver slats on the -Y face. Closed = flat against the face, open (100%) = sticking straight out.
+  const open = Number.isFinite(v.louver) ? Math.max(0, Math.min(100, v.louver)) / 100 : 0;
+  const tilt = open * Math.PI / 2;
+  const halfSlat = 1 / LOUVER_SLATS * 0.9;
+  for (let i = 0; i < LOUVER_SLATS; i++) {
+    const zc = -1 + (2 * i + 1) / LOUVER_SLATS;                        // centre height of this slat
+    const dy = -Math.sin(tilt) * halfSlat, dz = Math.cos(tilt) * halfSlat;
+    const pts = [[-0.85, -1.03 + dy, zc - dz], [0.85, -1.03 + dy, zc - dz], [0.85, -1.03 - dy, zc + dz], [-0.85, -1.03 - dy, zc + dz]];
+    const screen = pts.map(project);
+    polygons.push({ screen, depth: screen.reduce((s, p) => s + p.depth, 0) / 4 - 0.01,
+      fill: 'rgb(205,215,228)', stroke: '#3b4656' });
+  }
+
+  polygons.sort((p, q) => q.depth - p.depth);
+
+  // The light source, drawn before or after the cube depending on whether it is behind it.
+  const sunPos = toLight.map(c => c * 3.4);
+  const sun = project(sunPos);
+  const drawSun = () => {
+    if (!hasLight) return;
+    // rays travelling from the light toward the satellite
+    g.strokeStyle = '#f2b705'; g.fillStyle = '#f2b705'; g.lineWidth = 2;
+    for (const offset of [-0.5, 0, 0.5]) {
+      const side = [-toLight[1] * offset, toLight[0] * offset, offset * 0.4];
+      const from = project(sunPos.map((c, k) => c * 0.82 + side[k]));
+      const to = project(toLight.map((c, k) => c * 1.7 + side[k]));
+      g.beginPath(); g.moveTo(from.x, from.y); g.lineTo(to.x, to.y); g.stroke();
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);          // arrow head
+      g.beginPath(); g.moveTo(to.x, to.y);
+      g.lineTo(to.x - 10 * Math.cos(angle - 0.45), to.y - 10 * Math.sin(angle - 0.45));
+      g.lineTo(to.x - 10 * Math.cos(angle + 0.45), to.y - 10 * Math.sin(angle + 0.45));
+      g.closePath(); g.fill();
+    }
+    g.beginPath(); g.arc(sun.x, sun.y, 16 * sun.perspective, 0, Math.PI * 2);
+    g.fillStyle = '#ffd43b'; g.fill(); g.strokeStyle = '#e8a400'; g.stroke();
+  };
+  const sunBehind = sun.depth > 0;
+  if (sunBehind) drawSun();
+
+  // Faint ring showing the satellite's flat plane (where the light can come from).
+  g.strokeStyle = cssVar('--border'); g.lineWidth = 1; g.setLineDash([4, 4]);
+  g.beginPath();
+  for (let k = 0; k <= 64; k++) {
+    const t = k / 64 * Math.PI * 2, p = project([Math.cos(t) * 3.4, Math.sin(t) * 3.4, 0]);
+    if (k === 0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y);
+  }
+  g.stroke(); g.setLineDash([]);
+
+  for (const poly of polygons) {
+    g.beginPath();
+    poly.screen.forEach((p, k) => k ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y));
+    g.closePath(); g.fillStyle = poly.fill; g.fill();
+    g.strokeStyle = poly.stroke; g.lineWidth = 1; g.stroke();
+  }
+  g.font = '12px system-ui, sans-serif'; g.textAlign = 'center'; g.fillStyle = '#ffffff';
+  g.strokeStyle = 'rgba(0,0,0,0.65)'; g.lineWidth = 3; g.lineJoin = 'round';
+  for (const poly of polygons) if (poly.label) {   // dark outline keeps labels readable over the light slats
+    g.strokeText(poly.label, poly.center.x, poly.center.y + 4);
+    g.fillText(poly.label, poly.center.x, poly.center.y + 4);
+  }
+  g.textAlign = 'start';
+
+  if (!sunBehind) drawSun();
+  if (!hasLight) {
+    g.fillStyle = cssVar('--muted'); g.font = '13px system-ui, sans-serif';
+    g.fillText('No bright light seen (or not connected yet)', 10, 20);
+  }
+}
+
+// Drag to turn the view.
+(() => {
+  const canvas = $('cubeView');
+  let dragging = false, lastX = 0, lastY = 0;
+  canvas.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'; });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    viewYaw += (e.clientX - lastX) * 0.01;
+    viewPitch = Math.max(-1.4, Math.min(1.4, viewPitch + (e.clientY - lastY) * 0.01));
+    lastX = e.clientX; lastY = e.clientY;
+    drawCube();
+  });
+  canvas.addEventListener('pointerup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+})();
+
+window.addEventListener('resize', () => { drawCharts(); drawCube(); });
 drawCharts();
+drawCube();
 </script>
 </body>
 </html>

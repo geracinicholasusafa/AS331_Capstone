@@ -59,6 +59,9 @@ static bool     telemetryOn = true;   // Is the live temperature stream switched
 static uint32_t lastTelemetryMs = 0;  // When the last stream line was sent
 
 static float ventErrorDeg = NAN;     // How far the louvers are from pointing directly away from the brightest light
+static float lightDirectionDeg = NAN; // Where the brightest light comes from (0 = +X, 90 = +Y, 180 = -X, 270 = -Y). NAN if too dark
+static float lightTotal = 0;          // Sum of the four light sensors (0 to about 16000); bigger = brighter
+static float lightPlusX = 0, lightMinusX = 0, lightPlusY = 0, lightMinusY = 0;  // Each light sensor (0 to 4095)
 static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
 
 /*---------------------------------------------------------------------------------------------*/
@@ -208,9 +211,14 @@ static void read_sun_sensor() {
   plusY /= TCS_SUN_READS_TO_AVERAGE;
   minusY /= TCS_SUN_READS_TO_AVERAGE;
 
+  // Remember the raw readings so the status line, live stream, log and 3D view can show them.
+  lightPlusX = plusX; lightMinusX = minusX; lightPlusY = plusY; lightMinusY = minusY;
+
   float totalLight = plusX + minusX + plusY + minusY;
+  lightTotal = totalLight;
   if (totalLight < TCS_SUN_MIN_LIGHT_COUNTS) {
     ventErrorDeg = NAN;                                  // too dark: no bright light to avoid
+    lightDirectionDeg = NAN;
     return;
   }
 
@@ -218,6 +226,7 @@ static void read_sun_sensor() {
   float sunY = (plusY - minusY) / totalLight;
   float sunDirectionDeg = atan2(sunY, sunX) * RAD_TO_DEG;
   if (sunDirectionDeg < 0) sunDirectionDeg += 360.0;     // 0 to 360 like the lab code
+  lightDirectionDeg = sunDirectionDeg;
 
   // The ideal louver direction is exactly opposite the light (180 degrees away from it).
   float idealLouverDirectionDeg = sunDirectionDeg + 180.0;
@@ -496,6 +505,12 @@ static void send_telemetry_if_due() {
   line += ",louver_pct:" + number_for_stream(louverPercent, 0);
   line += ",wheel_rpm:" + number_for_stream(wheelRpm, 1);
   line += ",vent_error_deg:" + number_for_stream(ventErrorDeg, 1);
+  line += ",light_dir_deg:" + number_for_stream(lightDirectionDeg, 1);
+  line += ",light_total:" + number_for_stream(lightTotal, 0);
+  line += ",light_px:" + number_for_stream(lightPlusX, 0);
+  line += ",light_mx:" + number_for_stream(lightMinusX, 0);
+  line += ",light_py:" + number_for_stream(lightPlusY, 0);
+  line += ",light_my:" + number_for_stream(lightMinusY, 0);
   line += ",peltier_pct:" + number_for_stream(peltierPowerPercent, 1);
   line += ",peltier_target_C:" + number_for_stream(peltierTargetC, 1);
   say(line);
@@ -580,6 +595,8 @@ static void log_row_if_due() {
   row += "," + number_for_csv(louverPercent, 0);
   row += "," + number_for_csv(wheelRpm, 1);
   row += "," + number_for_csv(ventErrorDeg, 1);
+  row += "," + number_for_csv(lightDirectionDeg, 1);
+  row += "," + number_for_csv(lightTotal, 0);
   row += "," + number_for_csv(peltierPowerPercent, 1);
   row += "," + number_for_csv(peltierTargetC, 1);
 
@@ -603,7 +620,7 @@ bool tcs_start_logging() {
     return false;
   }
   logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,"
-                  "louver_pct,wheel_rpm,vent_error_deg,peltier_pct,peltier_target_C");
+                  "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
 
@@ -636,6 +653,7 @@ void tcs_update() {
   read_thermocouple();                    // always keep the temperature fresh, even when the TCS is off
   read_thermocouple2();                   // second thermocouple: reported only
   run_peltier();                        // test heater: runs whether or not the TCS is on
+  read_sun_sensor();                    // light direction: always measured, so it can be watched and calibrated with the TCS off
   if (!tcs_enabled) return;
 
   read_wheel_speed();
@@ -786,6 +804,7 @@ void tcs_print_status() {
   line += ", wheel=" + String(wheelRpm, 0) + "RPM";
   line += ", peltier=" + String(peltierPowerPercent, 0) + "%" + (isnan(peltierTargetC) ? String("") : " (target " + String(peltierTargetC, 1) + "C)");
   line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
+  line += ", light_from=" + (isnan(lightDirectionDeg) ? String("too dark") : String(lightDirectionDeg, 0) + "deg");
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   line += String(", logging=") + (loggingOn ? logFileName : "off");
   say(line);
