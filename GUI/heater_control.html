@@ -522,7 +522,7 @@ function drawCube() {
   const faces = [
     { n: [ 1, 0, 0], pts: [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]],       label: '+X' },
     { n: [-1, 0, 0], pts: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]],   label: '−X' },
-    { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y' },
+    { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y  solar panels' },
     { n: [ 0,-1, 0], pts: [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]],   label: '−Y  louvers', louvers: true },
     { n: [ 0, 0, 1], pts: [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],       label: '+Z  breadboard' },
     { n: [ 0, 0,-1], pts: [[-1,1,-1],[1,1,-1],[1,-1,-1],[-1,-1,-1]],   label: '' }
@@ -555,8 +555,15 @@ function drawCube() {
       [240, 240, 236], '#8a8f98');
   }
 
-  // Reaction wheel motor in the top-right corner of the top face (the +X, +Y corner seen from the louver side).
-  const motor = { x: 0.6, y: 0.6, r: 0.28, bottom: 1.03, top: 1.38, sides: 16 };
+  // Solar panels on the +Y face (opposite the louvers): four square cells in a 2 x 2 grid.
+  for (const [x0, x1] of [[-0.9, -0.04], [0.04, 0.9]]) {
+    for (const [z0, z1] of [[-0.9, -0.04], [0.04, 0.9]]) {
+      addPart([0, 1, 0], null, [[x0, 1.02, z0], [x1, 1.02, z0], [x1, 1.02, z1], [x0, 1.02, z1]], [32, 52, 115], '#9db4e6');
+    }
+  }
+
+  // Reaction wheel motor on the top face, in the corner on the louver (-Y) side and to the right (+X).
+  const motor = { x: 0.6, y: -0.6, r: 0.28, bottom: 1.03, top: 1.38, sides: 16 };
   const ring = z => Array.from({ length: motor.sides }, (_, k) => {
     const t = k / motor.sides * Math.PI * 2;
     return [motor.x + motor.r * Math.cos(t), motor.y + motor.r * Math.sin(t), z];
