@@ -100,6 +100,7 @@
 #include <ICM_20948.h>                                    // Sparkfun IMU library
 #include <TB9051FTGMotorCarrier.h>                        // Pololu Motor Carrier Library
 #include <ESP32Encoder.h>                                 // Motor encoder library to measure wheel speed
+#include <driver/gpio.h>                                  // Lets us add a pull-up to the XBee receive pin
 
 /*---------------------------------------------------------------------------------------------*/
 // Globals:
@@ -171,6 +172,10 @@ void setup() {
   //----------------------------------------------
   Xbee.begin(9600,SERIAL_8N1, XBEE_RX, XBEE_TX);  // Begin MCU <> XBee communication
   Xbee.setTimeout(20);
+  // Hold the XBee receive wire at its "idle" level when no XBee is plugged in. Without this the
+  // loose wire picks up electrical noise, which the board reads as junk commands (junk turns into
+  // command 0, "Motor Stopped"). gpio_pullup_en only adds the pull-up; the pin stays connected to the UART.
+  gpio_pullup_en((gpio_num_t)XBEE_RX);
   Xbee.println("[INFO] KestrelSAT online \npress 1 for options");
   // ----------------------------------------------
 
