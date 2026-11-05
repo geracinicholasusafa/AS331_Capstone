@@ -10,8 +10,10 @@
     - "Connect" asks you to pick the board's COM port, then listens to everything the board sends.
     - The board sends a "TCS,..." line once per second. This page reads the temperatures out of it and plots them.
     - The heater buttons send the same commands you would type in the serial monitor:
-        17 then a number  -> run the heater at that fixed power percent (0 = off)
-        16 then a number  -> hold the panel at that temperature in C (0 = off)
+        17 then a number  -> heater (the satellite's internal heat) at that fixed power percent (0 = off)
+        19 then a number  -> thermal control hold temperature in C: above it the satellite turns its louvers
+                             away from the light and opens them (wider the hotter it is). Also switches control on.
+        10                -> switches automatic thermal control on/off ("Stop control" only sends it when it is on)
       The firmware does all the safety checks (45 C cut-off, sensor failure cut-off); this page only asks.
     - Only one program can use a COM port at a time. Close the PlatformIO serial monitor and the
       KestrelSAT GUI before connecting here.
@@ -96,7 +98,7 @@
       <div class="readout"><div class="label">Thermocouple 1 (panel)</div><div class="value" id="vTemp1">--</div></div>
       <div class="readout"><div class="label">Thermocouple 2</div><div class="value" id="vTemp2">--</div></div>
       <div class="readout"><div class="label">Heater power</div><div class="value" id="vHeat">--</div></div>
-      <div class="readout"><div class="label">Heater target</div><div class="value" id="vTarget">--</div></div>
+      <div class="readout"><div class="label">Hold temperature</div><div class="value" id="vTarget">--</div></div>
       <div class="readout"><div class="label">TCS state</div><div class="value" id="vState" style="font-size:17px">--</div></div>
     </div>
   </section>
@@ -121,23 +123,27 @@
 
   <!-- 3. Heater control -->
   <section class="panel">
-    <h2>Heater</h2>
+    <h2>Internal heat and thermal control</h2>
     <div class="two">
       <div>
-        <strong>Fixed power</strong>
+        <strong>Internal heat (heater fixed power)</strong>
         <div class="row" style="margin-top:8px">
           <input type="range" id="powerSlider" min="0" max="100" step="5" value="0">
           <span id="powerLabel" style="min-width:48px; font-variant-numeric: tabular-nums">0%</span>
         </div>
-        <p class="note">Let go of the slider to send it. Start low (about 20%) and watch the temperature.</p>
+        <p class="note">This is the satellite's internal heat, set by you. Let go of the slider to send it.
+          Start low (about 20%) and watch the temperature.</p>
       </div>
       <div>
-        <strong>Hold a temperature</strong>
+        <strong>Thermal control: hold temperature</strong>
         <div class="row" style="margin-top:8px">
-          <input type="number" id="targetInput" min="15" max="40" step="0.5" value="30"> &deg;C
-          <button id="targetBtn">Hold</button>
+          <input type="number" id="holdInput" min="15" max="40" step="0.5" value="30"> &deg;C
+          <button id="holdBtn" class="primary">Hold</button>
+          <button id="tcsOffBtn">Stop control</button>
         </div>
-        <p class="note">15 to 40 &deg;C. The heater can only heat, so a target below the panel temperature does nothing.</p>
+        <p class="note">15 to 40 &deg;C. Hold switches automatic control on. Above this temperature the satellite turns
+          its louvers away from the light, then opens them: wider the hotter it gets. Below it, they close again.
+          It does not change the heater.</p>
       </div>
     </div>
     <div class="row" style="margin-top:10px">
@@ -153,7 +159,7 @@
     <div class="legend">
       <span><span class="swatch" style="background:var(--line1)"></span>Thermocouple 1 (panel)</span>
       <span><span class="swatch" style="background:var(--line2)"></span>Thermocouple 2</span>
-      <span><span class="swatch" style="background:var(--target)"></span>Heater target</span>
+      <span><span class="swatch" style="background:var(--target)"></span>Hold temperature</span>
     </div>
     <h2 style="margin-top:16px">Heater power (%)</h2>
     <canvas id="heatChart" height="110"></canvas>
@@ -287,7 +293,7 @@ function handleLine(line) {
   const sample = {
     t: (fields.t - firstBoardTimeMs) / 1000,
     temp1: fields.temp_C, temp2: fields.temp2_C,
-    heat: fields.peltier_pct, target: fields.peltier_target_C,
+    heat: fields.peltier_pct, target: fields.hold_C, tcsOn: fields.tcs_on,
     state: fields.state_id
   };
   samples.push(sample);
@@ -324,11 +330,18 @@ function updateReadouts(s) {
 $('powerSlider').oninput = () => { $('powerLabel').textContent = $('powerSlider').value + '%'; };
 $('powerSlider').onchange = () => send('17', $('powerSlider').value);   // fixed power
 
-$('targetBtn').onclick = () => {
-  const target = parseFloat($('targetInput').value);
-  if (!(target >= 15 && target <= 40)) { logLine('[page] Target must be between 15 and 40 °C.'); return; }
-  $('powerSlider').value = 0; $('powerLabel').textContent = '0%';
-  send('16', String(target));                                       // hold a temperature
+// Hold = the thermal control's set point (command 19). It switches automatic control on, and does not touch the heater.
+$('holdBtn').onclick = () => {
+  const hold = parseFloat($('holdInput').value);
+  if (!(hold >= 15 && hold <= 40)) { logLine('[page] Hold temperature must be between 15 and 40 °C.'); return; }
+  send('19', String(hold));
+};
+
+// Stop automatic control. Command 10 switches it on/off, so only send it when the board says control is on.
+$('tcsOffBtn').onclick = () => {
+  const last = samples[samples.length - 1];
+  if (last && last.tcsOn === 1) send('10');
+  else logLine('[page] Automatic control is already off.');
 };
 
 $('offBtn').onclick = () => {
@@ -348,7 +361,7 @@ $('clearBtn').onclick = () => { samples = []; firstBoardTimeMs = null; drawChart
 /** Downloads everything this page has received as a CSV file (empty cell = no valid reading). */
 $('saveBtn').onclick = () => {
   const cell = v => Number.isFinite(v) ? v : '';
-  let csv = 'elapsed_s,temp1_C,temp2_C,heater_pct,heater_target_C,state\n';
+  let csv = 'elapsed_s,temp1_C,temp2_C,heater_pct,hold_C,state\n';
   for (const s of samples) {
     csv += [s.t.toFixed(1), cell(s.temp1), cell(s.temp2), cell(s.heat), cell(s.target),
             Number.isFinite(s.state) ? STATE_NAMES[s.state] : ''].join(',') + '\n';

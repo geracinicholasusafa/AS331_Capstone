@@ -35,6 +35,7 @@ static Adafruit_MAX31855* thermocouple2 = nullptr;  // The second thermocouple c
 static float temp2C = NAN;                          // Latest thermocouple 2 temperature (NAN = no valid reading)
 
 static bool           tcs_enabled = false;          // Is automatic control switched on?
+static float          holdTempC = TCS_TARGET_TEMP_C; // Above this the satellite vents (set from the GUI Hold button, command 19)
 static TcsState       state = TCS_NORMAL;           // Which step we are in
 static TcsFaultReason faultReason = TCS_FAULT_NONE; // Why we are in FAULT (if we are)
 static uint32_t       stateStartMs = 0;             // When we entered the current step
@@ -238,7 +239,8 @@ static void read_sun_sensor() {
  * The further off we are, the harder we push (up to a gentle maximum).
  */
 static void turn_toward_vent_heading() {
-  float push = constrain(fabs(ventErrorDeg) * TCS_TURN_GAIN_PER_DEG, 0.0, TCS_TURN_MAX_THROTTLE);
+  // At least TCS_TURN_MIN_THROTTLE so the motor actually starts, at most TCS_TURN_MAX_THROTTLE.
+  float push = constrain(fabs(ventErrorDeg) * TCS_TURN_GAIN_PER_DEG, TCS_TURN_MIN_THROTTLE, TCS_TURN_MAX_THROTTLE);
   // A positive error means the louvers are "ahead" of the ideal heading, so the satellite must turn
   // backwards. The wheel always spins the opposite way to the satellite, so it spins forwards.
   float direction = (ventErrorDeg > 0) ? 1.0 : -1.0;
@@ -368,6 +370,22 @@ static void run_peltier() {
 // 5. The state machine: what to do in each step
 /*---------------------------------------------------------------------------------------------*/
 
+/** True once the panel has cooled far enough below the hold temperature to stop venting. */
+static bool cooled_enough() {
+  return !isnan(panelTempC) && panelTempC <= holdTempC - TCS_COOL_HYSTERESIS_C;
+}
+
+/**
+ * How far to open the louvers while venting. Just above the hold temperature they open a little
+ * (TCS_LOUVER_MIN_OPEN_PERCENT); every degree hotter opens them TCS_LOUVER_GAIN_PERCENT_PER_C more,
+ * up to fully open. So the louvers "modulate": the more heat there is, the more they let out.
+ */
+static float louver_opening_for_temperature() {
+  if (isnan(panelTempC)) return louverPercent;          // no reading: leave them where they are
+  float opening = TCS_LOUVER_MIN_OPEN_PERCENT + TCS_LOUVER_GAIN_PERCENT_PER_C * (panelTempC - holdTempC);
+  return constrain(opening, TCS_LOUVER_MIN_OPEN_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+}
+
 static void run_state_machine() {
   switch (state) {
 
@@ -376,10 +394,10 @@ static void run_state_machine() {
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
       set_wheel(0);
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
-      if (panelTempC > TCS_BAND_HIGH_C) {
+      if (panelTempC > holdTempC) {
         ventAnyway = false;
-        enter_state(TCS_SUN_AVOID);                       // too hot: first aim the louvers away from the light
-      } else if (panelTempC < TCS_BAND_LOW_C) {
+        enter_state(TCS_SUN_AVOID);                       // above the hold temperature: first aim the louvers away from the light
+      } else if (panelTempC < holdTempC - TCS_COLD_MARGIN_C) {
         enter_state(TCS_COLD_DETECTED);
       }
       break;
@@ -390,7 +408,7 @@ static void run_state_machine() {
       set_louvers(TCS_LOUVER_CLOSED_PERCENT);
       read_sun_sensor();
 
-      if (!isnan(panelTempC) && panelTempC <= TCS_TARGET_TEMP_C) {
+      if (cooled_enough()) {
         set_wheel(0);
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
       } else if (isnan(ventErrorDeg)) {
@@ -410,12 +428,12 @@ static void run_state_machine() {
       break;
 
     case TCS_COOLING:
-      // Open the louvers so internal heat radiates away.
-      set_louvers(TCS_LOUVER_OPEN_PERCENT);
+      // Open the louvers so internal heat radiates away: wider the hotter it is.
+      set_louvers(louver_opening_for_temperature());
       set_wheel(0);
-      if (!isnan(panelTempC) && panelTempC <= TCS_TARGET_TEMP_C) {
+      if (cooled_enough()) {
         enter_state(TCS_RECOVERY);                        // cooled down enough
-      } else if (time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
+      } else if (TCS_LOUVER_MAX_OPEN_MS > 0 && time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
       } else if (!ventAnyway) {
@@ -432,7 +450,7 @@ static void run_state_machine() {
       // Too cold: keep the louvers shut so no heat escapes, and wait for the satellite to warm up.
       set_louvers(TCS_LOUVER_CLOSED_PERCENT);
       set_wheel(0);
-      if (!isnan(panelTempC) && panelTempC >= TCS_TARGET_TEMP_C) enter_state(TCS_RECOVERY);
+      if (!isnan(panelTempC) && panelTempC >= holdTempC - TCS_COLD_MARGIN_C + TCS_COOL_HYSTERESIS_C) enter_state(TCS_RECOVERY);
       break;
 
     case TCS_RECOVERY:
@@ -502,6 +520,7 @@ static void send_telemetry_if_due() {
   line += ",rate_C_per_s:" + number_for_stream(tempRateCPerS, 2);
   line += ",state_id:" + String((int)state);
   line += ",tcs_on:" + String(tcs_enabled ? 1 : 0);
+  line += ",hold_C:" + number_for_stream(holdTempC, 1);
   line += ",louver_pct:" + number_for_stream(louverPercent, 0);
   line += ",wheel_rpm:" + number_for_stream(wheelRpm, 1);
   line += ",vent_error_deg:" + number_for_stream(ventErrorDeg, 1);
@@ -592,6 +611,7 @@ static void log_row_if_due() {
   row += "," + String(tcs_state_name(state));
   row += "," + String((int)state);
   row += "," + String(tcs_enabled ? 1 : 0);
+  row += "," + number_for_csv(holdTempC, 1);
   row += "," + number_for_csv(louverPercent, 0);
   row += "," + number_for_csv(wheelRpm, 1);
   row += "," + number_for_csv(ventErrorDeg, 1);
@@ -619,7 +639,7 @@ bool tcs_start_logging() {
     say("[TCS] ERROR: could not create a log file on the SD card.");
     return false;
   }
-  logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,"
+  logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,hold_C,"
                   "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
@@ -660,6 +680,21 @@ void tcs_update() {
   if (state != TCS_FAULT) check_for_faults();   // if something is wrong this switches us to FAULT
   run_state_machine();
 }
+
+bool tcs_set_hold_temperature(float holdC) {
+  if (holdC < TCS_MIN_HOLD_TEMP_C || holdC > TCS_MAX_HOLD_TEMP_C) {
+    say(String("[TCS] Hold temperature must be between ") + String(TCS_MIN_HOLD_TEMP_C, 0) + " and " +
+        String(TCS_MAX_HOLD_TEMP_C, 0) + " C. Nothing changed.");
+    return false;
+  }
+  holdTempC = holdC;
+  say(String("[TCS] Hold temperature set to ") + String(holdC, 1) + " C. Above it the satellite turns its louvers away "
+      "from the light and opens them.");
+  tcs_enable();                           // pressing Hold means "control to this temperature", so switch control on
+  return true;
+}
+
+float tcs_get_hold_temperature() { return holdTempC; }
 
 void tcs_enable() {
   if (tcs_enabled) return;
@@ -797,6 +832,7 @@ const char* tcs_fault_name(TcsFaultReason r) {
 
 void tcs_print_status() {
   String line = String("[TCS] ") + (tcs_enabled ? "ON" : "OFF") + ", state=" + tcs_state_name(state);
+  line += ", hold=" + String(holdTempC, 1) + "C";
   line += ", panel=" + (isnan(panelTempC) ? String("n/a") : String(panelTempC, 2) + "C");
   line += ", temp2=" + (isnan(temp2C) ? String("n/a") : String(temp2C, 2) + "C");
   line += ", rate=" + String(tempRateCPerS, 2) + "C/s";

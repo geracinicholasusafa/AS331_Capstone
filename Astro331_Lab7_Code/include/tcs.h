@@ -58,6 +58,16 @@ void tcs_update();
 /** Turns automatic thermal control on. Starts in NORMAL. */
 void tcs_enable();
 
+/**
+ * Sets the hold temperature (the GUI's Hold button, command 19) and switches automatic control on.
+ * Above the hold temperature the satellite turns its louvers away from the brightest light, then opens
+ * them: wider the hotter it is. It keeps venting until the panel is TCS_COOL_HYSTERESIS_C below the hold
+ * temperature, then closes them. It does NOT touch the heater; the heater is set separately (command 17).
+ * @return false if the temperature is outside TCS_MIN_HOLD_TEMP_C to TCS_MAX_HOLD_TEMP_C (nothing changes).
+ */
+bool tcs_set_hold_temperature(float holdC);
+float tcs_get_hold_temperature();
+
 /** Turns automatic thermal control off: louvers to rest, wheel stopped. The thermocouple is still read. */
 void tcs_disable();
 
@@ -138,7 +148,7 @@ void tcs_set_louvers_manual(float openPercent);
 /**
  * Starts writing a new CSV file on the SD card (TCS_log_data001.csv, then 002, ...), one row every
  * TCS_LOG_INTERVAL_MS. Columns:
- *   time_ms, elapsed_s, temp1_C, temp2_C, rate_C_per_s, state, state_id, tcs_on,
+ *   time_ms, elapsed_s, temp1_C, temp2_C, rate_C_per_s, state, state_id, tcs_on, hold_C,
  *   louver_pct, wheel_rpm, vent_error_deg, light_dir_deg, light_total, peltier_pct, peltier_target_C
  * temp1_C is thermocouple 1 (the panel), temp2_C is thermocouple 2. An empty cell means no valid reading.
  * Every row is saved straight away, so pulling the power loses at most one row.
@@ -156,7 +166,7 @@ bool tcs_is_logging();
  * Turns the live temperature stream on or off. It is ON by default.
  *
  * While on, one line is sent every TCS_TELEMETRY_INTERVAL_MS to both USB serial and the XBee, like:
- *   TCS,t:12345,temp_C:23.45,temp2_C:22.80,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan,light_dir_deg:90.0,light_total:2400,light_px:600,light_mx:500,light_py:800,light_my:500,peltier_pct:0.0,peltier_target_C:nan
+ *   TCS,t:12345,temp_C:23.45,temp2_C:22.80,chip_C:24.10,rate_C_per_s:0.12,state_id:0,tcs_on:1,hold_C:30.0,louver_pct:0,wheel_rpm:0.0,vent_error_deg:nan,light_dir_deg:90.0,light_total:2400,light_px:600,light_mx:500,light_py:800,light_my:500,peltier_pct:0.0,peltier_target_C:nan
  *   light_dir_deg is where the brightest light comes from (0 = +X, 90 = +Y, 180 = -X, 270 = -Y; nan = too dark),
  *   light_px/mx/py/my are the four light sensors (0 to 4095). The light is measured every update, even with the TCS off.
  * Every value after the colon is a plain number ("nan" means "no valid reading"), so a plotting

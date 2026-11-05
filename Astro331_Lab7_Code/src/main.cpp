@@ -52,6 +52,7 @@
  * | 16  | Peltier test heater: hold the panel at a chosen temperature (0 = off) |
  * | 17  | Peltier test heater: fixed power percent for bench testing (0 = off) |
  * | 18  | TCS: Start/stop the SD card CSV log (TCS_log_dataNNN.csv) |
+ * | 19  | TCS: Set the hold temperature (above it: turn louvers away from the light, open them wider the hotter it gets); switches the TCS on |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -150,6 +151,7 @@ void stream_RWspeed();
 void manual_set_louvers();
 void set_peltier_target_from_user();
 void set_peltier_power_from_user();
+void set_hold_temperature_from_user();
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // SETUP:
@@ -384,6 +386,7 @@ void process_main_menu() {
       Xbee.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
       Xbee.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Xbee.print("18 - TCS: Start/stop SD card CSV log\n");
+      Xbee.print("19 - TCS: Set hold temperature and turn automatic control on\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -405,6 +408,7 @@ void process_main_menu() {
       Serial.print("16 - Peltier heater: hold panel at a temperature (0 = off)\n");
       Serial.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Serial.print("18 - TCS: Start/stop SD card CSV log\n");
+      Serial.print("19 - TCS: Set hold temperature and turn automatic control on\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -478,6 +482,10 @@ void process_main_menu() {
 
     case 18: // Start or stop the SD card CSV log (both thermocouples and the TCS state)
       if (tcs_is_logging()) tcs_stop_logging(); else tcs_start_logging();
+      break;
+
+    case 19: // TCS hold temperature: above it, turn the louvers away from the light and open them (switches the TCS on)
+      set_hold_temperature_from_user();
       break;
 
     case 14: // Turn the live temperature stream on or off
@@ -1385,3 +1393,16 @@ void set_peltier_power_from_user() {
   tcs_set_peltier_power_manual(percent);
 }
 
+
+/** Command 19: asks for the TCS hold temperature in Celsius and switches automatic control on. */
+void set_hold_temperature_from_user() {
+  Serial.println("Enter TCS hold temperature in C (15 to 40). Above it the louvers turn away from the light and open:");
+  Xbee.println("Enter TCS hold temperature in C (15 to 40). Above it the louvers turn away from the light and open:");
+  float holdC;
+  if (!read_number_from_user(&holdC)) {
+    Serial.println("[CAUTION] No input, hold temperature not changed.");
+    Xbee.println("[CAUTION] No input, hold temperature not changed.");
+    return;
+  }
+  tcs_set_hold_temperature(holdC);
+}
