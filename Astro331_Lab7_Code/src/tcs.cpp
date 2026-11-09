@@ -933,6 +933,8 @@ static void log_row_if_due() {
   row += "," + String((int)pointingStep);
   row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnTargetDeg, 1) : String(""));
   row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnDoneDeg, 1) : String(""));
+  row += "," + (spinControlOn && pointingStep != POINT_TURNING ? number_for_csv(holdHeadingDeg, 1) : String(""));
+  row += "," + number_for_csv(gyroBiasDegPerS, 2);
 
   if (logFile.println(row) == 0) {      // the card did not accept the row (removed, full, or failing)
     loggingOn = false;
@@ -956,7 +958,7 @@ bool tcs_start_logging() {
   logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,hold_C,"
                   "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C,"
                   "light_px,light_mx,light_py,light_my,light_raw_dir_deg,sun_in_room_deg,"
-                  "heading_deg,spin_deg_per_s,wheel_cmd,point_step,turn_target_deg,turn_done_deg");
+                  "heading_deg,spin_deg_per_s,wheel_cmd,point_step,turn_target_deg,turn_done_deg,hold_heading_deg,gyro_zero_deg_per_s");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
   holdHeadingDeg -= headingDeg;         // keep holding the same real direction when the heading is re-zeroed
