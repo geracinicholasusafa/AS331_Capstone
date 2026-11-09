@@ -341,13 +341,20 @@ static void track_turn() {
     wantedRate = constrain(remaining * TCS_TURN_RATE_PER_DEG, -TCS_TURN_MAX_RATE_DEG_S, TCS_TURN_MAX_RATE_DEG_S);
   }
 
-  // Nudge the wheel. Spinning too fast in + -> push the throttle + (that turns the satellite -), and the other way round.
+  // Change the wheel speed. The wheel only pushes the satellite while its speed is CHANGING, so the bigger the
+  // spin-speed error, the faster the wheel speed changes (= the harder the push), enough to overcome the mount's
+  // friction. Spinning too fast in + -> push the throttle + (that turns the satellite -), and the other way round.
   float rateError = spinRateDegPerS - wantedRate;
   bool closeEnough = (pointingStep != POINT_TURNING) && fabs(rateError) < TCS_STILL_RATE_DEG_S;
   if (!closeEnough) {                                     // when holding still, ignore tiny gyro wobble
     wheelCommand += TCS_SPIN_GAIN * rateError * seconds;
-    wheelCommand = constrain(wheelCommand, -TCS_WHEEL_MAX_THROTTLE, TCS_WHEEL_MAX_THROTTLE);
+  } else {
+    // Holding still: slowly let the wheel spin down toward zero. Slowly enough that friction keeps the satellite
+    // from moving, so the wheel does not creep up to the 400 RPM limit after each turn.
+    float bleed = TCS_WHEEL_BLEED_PER_S * seconds;
+    wheelCommand = (fabs(wheelCommand) <= bleed) ? 0 : wheelCommand - (wheelCommand > 0 ? bleed : -bleed);
   }
+  wheelCommand = constrain(wheelCommand, -TCS_SPIN_MAX_THROTTLE, TCS_SPIN_MAX_THROTTLE);
   set_wheel(wheelCommand * TCS_WHEEL_DIRECTION);
 
   bool still = fabs(spinRateDegPerS) < TCS_STILL_RATE_DEG_S;

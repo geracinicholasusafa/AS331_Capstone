@@ -116,8 +116,13 @@
 // to the spin speed wanted, including zero when holding still.
 #define TCS_TURN_MAX_RATE_DEG_S    15.0   // Fastest the satellite is allowed to turn, degrees per second (lower = gentler)
 #define TCS_TURN_RATE_PER_DEG      0.3    // Slowing down near the end: wanted turn speed per degree still to go (20 deg left -> 6 deg/s)
-#define TCS_SPIN_GAIN              0.02   // How quickly the wheel throttle changes per deg/s of spin-speed error, every second.
-                                          // Too small: sluggish, slow to stop. Too big: twitchy / back and forth. (PROPOSED, tune on the bench)
+#define TCS_SPIN_GAIN              0.10   // How quickly the wheel throttle changes per deg/s of spin-speed error, every second.
+                                          // The wheel only pushes the satellite while its speed is CHANGING, so this sets how hard it pushes.
+                                          // Satellite does not move (mount friction wins): raise it. Twitchy / back and forth: lower it.
+                                          // (Was 0.02, too weak to beat the test mount's friction.)
+#define TCS_SPIN_MAX_THROTTLE      0.85   // Largest throttle the turning controller uses (stays under the 400 RPM fault limit)
+#define TCS_WHEEL_BLEED_PER_S      0.05   // While holding still, the wheel throttle eases back toward 0 by this much per second,
+                                          // slowly enough that friction keeps the satellite still (stops the wheel creeping up to 400 RPM)
 #define TCS_TURN_KICK_THROTTLE     0.35   // Throttle jumped to at the start of a turn so the motor overcomes its friction straight away
 #define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
 #define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
