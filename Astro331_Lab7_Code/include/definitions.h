@@ -106,24 +106,23 @@
 #define TCS_LOUVER_FACE_ANGLE_DEG  180.0  // Direction the louvers face, in the sun-sensor frame (0 = +X, 90 = +Y, 180 = -X, 270 = -Y). The louvers are on the -X face, solar panels on +X (confirmed by the team).
 #define TCS_VENT_ALIGN_TOL_DEG     15.0   // Within this many degrees of "directly away from the light" counts as aligned (PROPOSED)
 #define TCS_VENT_LOST_TOL_DEG      30.0   // While venting, drifting further off than this is reported as SUN_AVOID (louvers keep venting while it turns back)
-#define TCS_VENT_SETTLE_TOL_DEG    5.0    // Once a correction starts, keep correcting until this close (a gap between 15 and 5 stops back-and-forth chatter)
 #define TCS_LIGHT_DIRECTION_OFFSET_DEG 0.0 // Added to the measured light direction to line the sensors up with the body axes.
                                           // Normally left at 0 and set from the GUI's "Calibrate" button instead (command 20, saved in the board's memory).
 
-// --- Gentle pointing corrections ---
-// Near the target the satellite is turned in short pushes with a pause after each one, so it can stop and the
-// light sensors can catch up before the next push. This stops it overshooting and swinging back and forth.
-#define TCS_NUDGE_ZONE_DEG         45.0   // Closer than this: short pushes. Further off: turn steadily (PROPOSED)
-#define TCS_NUDGE_THROTTLE         0.35   // Wheel throttle during a short push (must still be enough to start the motor)
-#define TCS_NUDGE_PULSE_MS         300    // How long each push lasts, in milliseconds (shorter = gentler)
-#define TCS_NUDGE_REST_MS          1500   // Pause after each push before checking again, in milliseconds (longer = gentler)
+// --- Turning: "look, turn, settle, look again" ---
+// With the satellite still, the light sensors say how far off the louvers are. The satellite then turns by that
+// angle, measured with the IMU gyroscope (the light sensors are ignored mid-turn), stops, settles, and looks again.
+#define TCS_TURN_THROTTLE          0.40   // Wheel throttle during a turn (must be enough to start the motor; lower = slower, gentler)
+#define TCS_TURN_STOP_EARLY_DEG    5.0    // Stop the wheel this many degrees before the end, because the satellite coasts a little (tune on the bench)
+#define TCS_TURN_SETTLE_MS         2000   // Wait this long with the wheel stopped before looking at the light again
+#define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
+#define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
+#define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
+#define TCS_GYRO_DIRECTION         1      // +1 or -1. Flip if the gyro counts the turn backwards (the turn never ends, or "wrong way" appears while it turns the right way)
 
 // --- Reaction wheel ---
 #define TCS_MAX_WHEEL_RPM          400.0  // Team limit: the wheel must never spin faster than this
 #define TCS_WHEEL_MAX_THROTTLE     0.95   // Full throttle gives about 421 RPM, so 0.95 keeps us just under 400
-#define TCS_TURN_MAX_THROTTLE      0.50   // Strongest throttle used while turning the satellite (was 0.60; lowered for gentler turns)
-#define TCS_TURN_MIN_THROTTLE      0.35   // Weakest throttle while turning: below this the motor may not overcome its own friction (PROPOSED)
-#define TCS_TURN_GAIN_PER_DEG      0.01   // Throttle per degree of pointing error (30 deg off -> 0.30)
 #define TCS_WHEEL_DIRECTION        1      // +1 or -1. Flip this if the satellite turns the WRONG way (toward the light instead of away)
 
 
