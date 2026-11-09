@@ -87,6 +87,7 @@
       <button id="connectBtn" class="primary">Connect</button>
       <button id="disconnectBtn" disabled>Disconnect</button>
       <span id="connStatus" class="status">Not connected</span>
+      <span id="linkStatus"></span>
     </div>
     <p class="note" id="browserNote"></p>
   </section>
@@ -232,38 +233,79 @@ if (!('serial' in navigator)) {
   $('browserNote').textContent = 'Close the serial monitor and the KestrelSAT GUI first: only one program can use the port at a time. Connecting may restart the board.';
 }
 
+let lastDataMs = 0;                  // when the last line arrived from the board (for the "receiving data" light)
+let userDisconnecting = false;       // true while the Disconnect button is closing the port on purpose
+
 $('connectBtn').onclick = async () => {
+  let picked;
   try {
-    port = await navigator.serial.requestPort();
-    await port.open({ baudRate: Number($('baud').value) });
-    writer = port.writable.getWriter();
-    setConnected(true);
-    readLoopDone = readLoop();
+    picked = await navigator.serial.requestPort();
   } catch (err) {
-    logLine('[page] Could not connect: ' + err.message);
-    port = null;
+    logLine('[page] No port chosen.');                                  // the user closed the picker
+    return;
   }
+  try {
+    await picked.open({ baudRate: Number($('baud').value) });
+  } catch (err) {
+    logLine('[page] Could not open that port (' + err.message + ').');
+    logLine('[page] Usually another program is already using it: close the PlatformIO serial monitor, XCTU, '
+          + 'the KestrelSAT GUI and any other tab of this page, unplug and re-plug the receiver, then Connect again.');
+    return;
+  }
+  port = picked;
+  writer = port.writable.getWriter();
+  lastDataMs = 0;
+  setConnected(true);
+  logLine('[page] Port open at ' + $('baud').value + ' baud. Waiting for data from the satellite...');
+  readLoopDone = readLoop();
 };
 
-$('disconnectBtn').onclick = disconnect;
+$('disconnectBtn').onclick = async () => {
+  userDisconnecting = true;
+  await closePort();
+  userDisconnecting = false;
+  logLine('[page] Disconnected.');
+};
 
-async function disconnect() {
-  try {
-    if (reader) await reader.cancel();
-    if (readLoopDone) await readLoopDone;
-    if (writer) { writer.releaseLock(); writer = null; }
-    if (port) await port.close();
-  } catch (err) { logLine('[page] ' + err.message); }
-  port = null;
+/** Closes the port and resets the page, whether we chose to disconnect or the connection dropped. */
+async function closePort() {
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { if (readLoopDone) await readLoopDone; } catch (e) {}
+  try { if (writer) writer.releaseLock(); } catch (e) {}
+  try { if (port) await port.close(); } catch (e) {}
+  writer = null; reader = null; readLoopDone = null; port = null;
   setConnected(false);
 }
 
+/** If the receiver is unplugged (or the board resets its USB), the browser tells us here. */
+navigator.serial?.addEventListener('disconnect', e => {
+  if (port && e.target === port) {
+    logLine('[page] The USB device was unplugged or reset. Plug it back in and click Connect.');
+    closePort();
+  }
+});
+
 function setConnected(on) {
-  $('connStatus').textContent = on ? 'Connected' : 'Not connected';
+  $('connStatus').textContent = on ? 'Port open' : 'Not connected';
   $('connStatus').className = on ? 'status on' : 'status';
   $('connectBtn').disabled = on;
   $('disconnectBtn').disabled = !on;
+  updateLinkLight();
 }
+
+/**
+ * "Port open" only means the browser opened the COM port. This light shows whether data is actually
+ * arriving from the satellite (it sends a line every second, plus a heartbeat every 3 seconds).
+ */
+function updateLinkLight() {
+  const light = $('linkStatus');
+  if (!port) { light.textContent = ''; return; }
+  if (!lastDataMs) { light.textContent = 'No data from the satellite yet'; light.className = 'warn'; return; }
+  const quiet = (Date.now() - lastDataMs) / 1000;
+  if (quiet < 5) { light.textContent = 'Receiving data'; light.className = 'status on'; }
+  else { light.textContent = 'No data for ' + Math.round(quiet) + ' s'; light.className = 'warn'; }
+}
+setInterval(updateLinkLight, 1000);
 
 /** Reads everything the board sends, splits it into lines, and handles each line. */
 async function readLoop() {
@@ -279,23 +321,30 @@ async function readLoop() {
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline).replace(/\r$/, '');
         buffer = buffer.slice(newline + 1);
+        lastDataMs = Date.now();
         if (line.length) handleLine(line);
       }
     }
   } catch (err) {
-    logLine('[page] Connection lost: ' + err.message);
+    if (!userDisconnecting) logLine('[page] Connection lost (' + err.message + '). Click Connect to reconnect.');
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch (e) {}
     reader = null;
   }
+  if (!userDisconnecting && port) closePort();     // the connection dropped: show it, instead of pretending to be connected
 }
 
 /** Sends text to the board, one line per item (the board reads commands one line at a time). */
 async function send(...lines) {
-  if (!writer) { logLine('[page] Not connected.'); return; }
+  if (!writer) { logLine('[page] Not connected: click Connect first.'); return; }
   const text = lines.map(l => l + '\n').join('');
-  await writer.write(new TextEncoder().encode(text));
-  logLine('> ' + lines.join('  then  '));
+  try {
+    await writer.write(new TextEncoder().encode(text));
+    logLine('> ' + lines.join('  then  '));
+  } catch (err) {
+    logLine('[page] Could not send (' + err.message + '). The connection dropped; click Connect again.');
+    closePort();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
