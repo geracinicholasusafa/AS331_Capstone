@@ -65,7 +65,7 @@
                                         // keeps coming, closing the louvers would just overheat the panel. Over-cooling is
                                         // still prevented, because the louvers close once the panel is below the hold temperature.
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
-#define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)
+#define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent without turning for TCS_TURN_RETRY_MS, then try again
 
 // --- Louvers (percentages: 0 = closed, 100 = fully open) ---
 #define TCS_LOUVER_CLOSED_PERCENT   0.0
@@ -127,6 +127,9 @@
 #define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
 #define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
 #define TCS_TURN_SETTLE_MS         2000   // Must be still this long before looking at the light again
+#define TCS_TURN_SETTLE_MAX_MS     8000   // ...but never wait longer than this: if it keeps drifting, look at the light and correct anyway
+#define TCS_TURN_RETRY_MS          30000  // After a turn-away took too long (TCS_SUN_AVOID_TIMEOUT_MS) or went the wrong way,
+                                          // vent without turning this long, then try again (was: never try again until it cooled down)
 #define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
 #define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
 #define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)

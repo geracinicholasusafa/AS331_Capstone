@@ -68,6 +68,7 @@ static float rawLightDirectionDeg = NAN; // Light direction straight from the se
 static float lightOffsetDeg = TCS_LIGHT_DIRECTION_OFFSET_DEG; // Calibration: added to the raw direction (command 20)
 static float lightTotal = 0;          // Sum of the four light sensors (0 to about 16000); bigger = brighter
 static float lightPlusX = 0, lightMinusX = 0, lightPlusY = 0, lightMinusY = 0;  // Each light sensor (0 to 4095)
+static uint32_t ventAnywaySinceMs = 0; // When turning was paused (it is retried after TCS_TURN_RETRY_MS)
 static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
 
 /*---------------------------------------------------------------------------------------------*/
@@ -280,6 +281,8 @@ static uint32_t turnStartedMs = 0;
 static uint32_t lastGyroMs = 0;           // When the gyroscope was last read (to know how much time passed)
 static uint32_t settleStartedMs = 0;      // When the satellite last became still
 static bool     turnWentWrongWay = false; // Set when the gyro saw the satellite turning the opposite way
+static uint32_t wrongWaySinceMs = 0;     // When that happened (turning is retried after TCS_TURN_RETRY_MS)
+static uint32_t settleBeganMs = 0;       // When settling began (settleStartedMs restarts every time it moves; this does not)
 
 /** Stops the wheel completely (used for FAULT and when the TCS is switched off). */
 static void stop_turning() {
@@ -293,7 +296,7 @@ static void stop_turning() {
 static void hold_still() {
   spinControlOn = true;
   if (pointingStep == POINT_TURNING) {             // abandon the turn, just stop spinning
-    pointingStep = POINT_SETTLING;
+    pointingStep = POINT_SETTLING; settleBeganMs = millis();
     settleStartedMs = millis();
   }
 }
@@ -400,15 +403,16 @@ static void track_turn(float seconds) {
   if (pointingStep == POINT_TURNING) {
     bool rightWay = (turnDoneDeg * turnTargetDeg) >= 0;
     if (fabs(remaining) < TCS_TURN_DONE_DEG && still) {
-      pointingStep = POINT_SETTLING;                      // arrived and nearly stopped
+      pointingStep = POINT_SETTLING; settleBeganMs = millis();                      // arrived and nearly stopped
       settleStartedMs = now;
     } else if (!rightWay && fabs(turnDoneDeg) > TCS_TURN_WRONG_WAY_DEG) {
       turnWentWrongWay = true;
+      wrongWaySinceMs = now;
       say("[TCS] Satellite is turning the wrong way. Flip TCS_WHEEL_DIRECTION (or TCS_GYRO_DIRECTION) in definitions.h.");
       stop_turning();
     } else if (now - turnStartedMs > TCS_TURN_TIMEOUT_MS) {
       say(String("[TCS] Turn took too long (") + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + " deg). Stopping to look again.");
-      pointingStep = POINT_SETTLING;
+      pointingStep = POINT_SETTLING; settleBeganMs = millis();
       settleStartedMs = now;
     }
   } else if (pointingStep == POINT_SETTLING && !still) {
@@ -421,13 +425,19 @@ static void track_turn(float seconds) {
  * Returns true when the louvers are aimed (or there is no bright light) and the satellite is still.
  */
 static bool keep_louvers_pointed_away() {
-  if (turnWentWrongWay) return true;                      // do not keep spinning the wrong way; vent and wait for a fix
+  if (turnWentWrongWay) {                                 // a turn went the wrong way: pause turning for a while, then retry
+    if (millis() - wrongWaySinceMs < TCS_TURN_RETRY_MS) return true;
+    turnWentWrongWay = false;
+    say("[TCS] Trying again to point the louvers away from the light.");
+  }
   spinControlOn = true;                                   // the gyroscope holds the satellite still between turns
   switch (pointingStep) {
     case POINT_TURNING:
       return false;                                       // track_turn() is handling it
     case POINT_SETTLING:
-      if (millis() - settleStartedMs < TCS_TURN_SETTLE_MS) return false;
+      // Wait until it has been still for TCS_TURN_SETTLE_MS, but never longer than TCS_TURN_SETTLE_MAX_MS in total:
+      // if it keeps drifting, look at the light anyway and correct.
+      if (millis() - settleStartedMs < TCS_TURN_SETTLE_MS && millis() - settleBeganMs < TCS_TURN_SETTLE_MAX_MS) return false;
       pointingStep = POINT_IDLE;
       if (!isnan(ventErrorDeg)) {
         say(String("[TCS] After turning: louvers ") + String(fabs(ventErrorDeg), 0) + " deg from pointing away from the light.");
@@ -641,9 +651,10 @@ static void run_state_machine() {
         hold_still();   
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
       } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
-        say("[TCS] Could not turn away from the light in time, venting without turning.");
+        say("[TCS] Could not turn away from the light in time, venting without turning for a while.");
         hold_still();   
-        ventAnyway = true;                                // stop COOLING from sending us back to turning
+        ventAnyway = true;                                // COOLING pauses turning, then tries again after TCS_TURN_RETRY_MS
+        ventAnywaySinceMs = millis();
         enter_state(TCS_COOLING);
       } else if (keep_louvers_pointed_away()) {
         enter_state(TCS_COOLING);                         // aimed at cold space (or no bright light at all)
@@ -665,9 +676,13 @@ static void run_state_machine() {
         hold_still();   
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
-      } else if (ventAnyway) {
-        hold_still();                                      // turning did not work earlier: just vent
+      } else if (ventAnyway && millis() - ventAnywaySinceMs < TCS_TURN_RETRY_MS) {
+        hold_still();                                      // turning did not work just now: vent, and try again shortly
       } else {
+        if (ventAnyway) {
+          ventAnyway = false;
+          say("[TCS] Trying again to point the louvers away from the light.");
+        }
         read_sun_sensor();
         // Only judge "drifted far" while the satellite is still (readings taken mid-turn are not trusted).
         bool driftedFar = pointingStep == POINT_IDLE && !isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG;
@@ -1148,9 +1163,12 @@ void tcs_print_status() {
   else if (state == TCS_FAULT) say("[TCS] Why no turning: FAULT stops the wheel (send 12 to clear).");
   else if (state == TCS_NORMAL || state == TCS_RECOVERY || state == TCS_COLD_DETECTED)
     say("[TCS] Why no turning: panel is not above the hold temperature, so there is nothing to vent.");
-  else if (turnWentWrongWay) say("[TCS] Why no turning: the last turn went the WRONG way, so turning is paused. "
-                                 "Flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION in definitions.h, re-upload, then press Hold.");
-  else if (ventAnyway) say("[TCS] Why no turning: an earlier turn took too long; it will retry next time the panel heats up.");
+  else if (turnWentWrongWay) say("[TCS] Why no turning: the last turn went the WRONG way, so turning is paused for 30 s. If it keeps happening, "
+                                 "flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION in definitions.h and re-upload.");
+  else if (ventAnyway) {
+    long secondsLeft = ((long)TCS_TURN_RETRY_MS - (long)(millis() - ventAnywaySinceMs)) / 1000;
+    say("[TCS] Why no turning: an earlier turn took too long; it tries again " + String(secondsLeft < 0 ? 0 : secondsLeft) + " s from now.");
+  }
   else if (isnan(ventErrorDeg)) say("[TCS] Why no turning: too dark, no bright light to turn away from.");
   else if (pointingStep == POINT_IDLE && fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) say("[TCS] Louvers already pointed away from the light.");
 
