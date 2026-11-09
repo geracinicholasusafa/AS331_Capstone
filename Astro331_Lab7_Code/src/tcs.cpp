@@ -282,7 +282,9 @@ static uint32_t lastGyroMs = 0;           // When the gyroscope was last read (t
 static uint32_t settleStartedMs = 0;      // When the satellite last became still
 static bool     turnWentWrongWay = false; // Set when the gyro saw the satellite turning the opposite way
 static uint32_t wrongWaySinceMs = 0;     // When that happened (turning is retried after TCS_TURN_RETRY_MS)
-static uint32_t settleBeganMs = 0;       // When settling began (settleStartedMs restarts every time it moves; this does not)
+static uint32_t settleBeganMs = 0;
+static float    holdHeadingDeg = 0;       // Heading the wheel holds between turns (gyro heading, degrees)
+static bool     holdHeadingNeedsReset = true; // true = take the current heading as the one to hold       // When settling began (settleStartedMs restarts every time it moves; this does not)
 
 /** Stops the wheel completely (used for FAULT and when the TCS is switched off). */
 static void stop_turning() {
@@ -290,14 +292,17 @@ static void stop_turning() {
   wheelCommand = 0;
   set_wheel(0);
   pointingStep = POINT_IDLE;
+  holdHeadingNeedsReset = true;
 }
 
 /** Keeps the satellite still with the wheel (no turning, no looking at the light). */
 static void hold_still() {
+  if (!spinControlOn) holdHeadingNeedsReset = true; // starting fresh: hold whatever heading it has now
   spinControlOn = true;
-  if (pointingStep == POINT_TURNING) {             // abandon the turn, just stop spinning
+  if (pointingStep == POINT_TURNING) {             // abandon the turn, just stop and hold here
     pointingStep = POINT_SETTLING; settleBeganMs = millis();
     settleStartedMs = millis();
+    holdHeadingNeedsReset = true;
   }
 }
 
@@ -374,28 +379,32 @@ static void track_turn(float seconds) {
   uint32_t now = millis();
 
   // What spin speed do we want right now?
-  float wantedRate = 0;                                   // settling / holding: stand still
+  float wantedRate = 0;
   float remaining = 0;
   if (pointingStep == POINT_TURNING) {
     turnDoneDeg += spinRateDegPerS * seconds;
     remaining = turnTargetDeg - turnDoneDeg;
     // Slow down near the end: wanted speed shrinks with the angle left, up to a gentle maximum.
     wantedRate = constrain(remaining * TCS_TURN_RATE_PER_DEG, -TCS_TURN_MAX_RATE_DEG_S, TCS_TURN_MAX_RATE_DEG_S);
+  } else {
+    // Between turns: HOLD A HEADING, not just "stop spinning". Something keeps pushing the satellite (the
+    // internal fan), so if it gets pushed off, steer back. The wheel ends up leaning steadily against the push.
+    if (holdHeadingNeedsReset) { holdHeadingDeg = headingDeg; holdHeadingNeedsReset = false; }
+    float offHold = headingDeg - holdHeadingDeg;
+    if (fabs(offHold) > TCS_HOLD_DEADBAND_DEG) {
+      wantedRate = constrain(-offHold * TCS_HOLD_RATE_PER_DEG, -TCS_HOLD_MAX_RATE_DEG_S, TCS_HOLD_MAX_RATE_DEG_S);
+    }
   }
 
   // Change the wheel speed. The wheel only pushes the satellite while its speed is CHANGING, so the bigger the
   // spin-speed error, the faster the wheel speed changes (= the harder the push), enough to overcome the mount's
   // friction. Spinning too fast in + -> push the throttle + (that turns the satellite -), and the other way round.
   float rateError = spinRateDegPerS - wantedRate;
-  bool closeEnough = (pointingStep != POINT_TURNING) && fabs(rateError) < TCS_STILL_RATE_DEG_S;
-  if (!closeEnough) {                                     // when holding still, ignore tiny gyro wobble
+  bool closeEnough = (pointingStep != POINT_TURNING) && wantedRate == 0 && fabs(rateError) < TCS_HOLD_SPIN_DEADBAND_DEG_S;
+  if (!closeEnough) {                                     // on the held heading and still: ignore tiny gyro wobble
     wheelCommand += TCS_SPIN_GAIN * rateError * seconds;
-  } else {
-    // Holding still: slowly let the wheel spin down toward zero. Slowly enough that friction keeps the satellite
-    // from moving, so the wheel does not creep up to the 400 RPM limit after each turn.
-    float bleed = TCS_WHEEL_BLEED_PER_S * seconds;
-    wheelCommand = (fabs(wheelCommand) <= bleed) ? 0 : wheelCommand - (wheelCommand > 0 ? bleed : -bleed);
   }
+  // (No slow wheel spin-down here any more: with the fan pushing, the wheel must keep leaning against it.)
   wheelCommand = constrain(wheelCommand, -TCS_SPIN_MAX_THROTTLE, TCS_SPIN_MAX_THROTTLE);
   set_wheel(wheelCommand * TCS_WHEEL_DIRECTION);
 
@@ -405,6 +414,7 @@ static void track_turn(float seconds) {
     if (fabs(remaining) < TCS_TURN_DONE_DEG && still) {
       pointingStep = POINT_SETTLING; settleBeganMs = millis();                      // arrived and nearly stopped
       settleStartedMs = now;
+      holdHeadingDeg = headingDeg + remaining;           // hold the heading the turn was aiming for
     } else if (!rightWay && fabs(turnDoneDeg) > TCS_TURN_WRONG_WAY_DEG) {
       turnWentWrongWay = true;
       wrongWaySinceMs = now;
@@ -414,6 +424,7 @@ static void track_turn(float seconds) {
       say(String("[TCS] Turn took too long (") + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + " deg). Stopping to look again.");
       pointingStep = POINT_SETTLING; settleBeganMs = millis();
       settleStartedMs = now;
+      holdHeadingDeg = headingDeg;                        // hold here while it looks again
     }
   } else if (pointingStep == POINT_SETTLING && !still) {
     settleStartedMs = now;                                // must be still for the whole settle time
@@ -448,7 +459,11 @@ static bool keep_louvers_pointed_away() {
   }
   // Satellite is still: look at the light.
   if (isnan(ventErrorDeg)) return true;                   // no bright light: any direction is fine
-  if (fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) return true;   // close enough
+  if (fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {      // close enough: no new turn needed
+    // Fine-tune the held heading toward exactly "away from the light" (the light sensor is trusted only while still).
+    if (fabs(spinRateDegPerS) < TCS_STILL_RATE_DEG_S) holdHeadingDeg = headingDeg - ventErrorDeg;
+    return true;
+  }
   start_turn();
   return false;
 }
@@ -944,6 +959,7 @@ bool tcs_start_logging() {
                   "heading_deg,spin_deg_per_s,wheel_cmd,point_step,turn_target_deg,turn_done_deg");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
+  holdHeadingDeg -= headingDeg;         // keep holding the same real direction when the heading is re-zeroed
   headingDeg = 0;                       // heading is measured from where the satellite faces when logging starts
 
   loggingOn = true;

@@ -121,8 +121,12 @@
                                           // Satellite does not move (mount friction wins): raise it. Twitchy / back and forth: lower it.
                                           // (Was 0.02, too weak to beat the test mount's friction.)
 #define TCS_SPIN_MAX_THROTTLE      0.85   // Largest throttle the turning controller uses (stays under the 400 RPM fault limit)
-#define TCS_WHEEL_BLEED_PER_S      0.05   // While holding still, the wheel throttle eases back toward 0 by this much per second,
-                                          // slowly enough that friction keeps the satellite still (stops the wheel creeping up to 400 RPM)
+// Holding between turns: the wheel holds a HEADING (from the gyro), not just "no spin", so a steady push such as the
+// internal fan is pushed back against. The held heading is where the last turn aimed, fine-tuned by the light sensors.
+#define TCS_HOLD_DEADBAND_DEG      1.5    // Pushed off the held heading by less than this: leave it
+#define TCS_HOLD_RATE_PER_DEG      0.5    // Steer-back speed per degree off the held heading (4 deg off -> 2 deg/s)
+#define TCS_HOLD_MAX_RATE_DEG_S    5.0    // Fastest steer-back while holding
+#define TCS_HOLD_SPIN_DEADBAND_DEG_S 0.5  // On the held heading, spin slower than this is ignored (gyro wobble)
 #define TCS_TURN_KICK_THROTTLE     0.35   // Throttle jumped to at the start of a turn so the motor overcomes its friction straight away
 #define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
 #define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
