@@ -279,6 +279,7 @@ static float    turnDoneDeg = 0;          // How far we have turned so far, adde
 static uint32_t turnStartedMs = 0;
 static uint32_t lastGyroMs = 0;           // When the gyroscope was last read (to know how much time passed)
 static uint32_t settleStartedMs = 0;      // When the satellite last became still
+static uint32_t settleBeganMs = 0;        // When settling began (settleStartedMs restarts every time it moves; this does not)
 static bool     turnWentWrongWay = false; // Set when the gyro saw the satellite turning the opposite way
 
 /** Stops the wheel completely (used for FAULT and when the TCS is switched off). */
@@ -295,6 +296,7 @@ static void hold_still() {
   if (pointingStep == POINT_TURNING) {             // abandon the turn, just stop spinning
     pointingStep = POINT_SETTLING;
     settleStartedMs = millis();
+    settleBeganMs = settleStartedMs;
   }
 }
 
@@ -388,14 +390,18 @@ static void track_turn(float seconds) {
     if (fabs(remaining) < TCS_TURN_DONE_DEG && still) {
       pointingStep = POINT_SETTLING;                      // arrived and nearly stopped
       settleStartedMs = now;
+      settleBeganMs = now;
     } else if (!rightWay && fabs(turnDoneDeg) > TCS_TURN_WRONG_WAY_DEG) {
-      turnWentWrongWay = true;
-      say("[TCS] Satellite is turning the wrong way. Flip TCS_WHEEL_DIRECTION (or TCS_GYRO_DIRECTION) in definitions.h.");
-      stop_turning();
+      say("[TCS] Satellite is turning the wrong way. Stopping, then looking again. If this keeps happening, "
+          "flip TCS_WHEEL_DIRECTION (or TCS_GYRO_DIRECTION) in definitions.h.");
+      pointingStep = POINT_SETTLING;                      // brake to a stop with the wheel, then look and try again
+      settleStartedMs = now;
+      settleBeganMs = now;
     } else if (now - turnStartedMs > TCS_TURN_TIMEOUT_MS) {
       say(String("[TCS] Turn took too long (") + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + " deg). Stopping to look again.");
       pointingStep = POINT_SETTLING;
       settleStartedMs = now;
+      settleBeganMs = now;
     }
   } else if (pointingStep == POINT_SETTLING && !still) {
     settleStartedMs = now;                                // must be still for the whole settle time
@@ -407,13 +413,14 @@ static void track_turn(float seconds) {
  * Returns true when the louvers are aimed (or there is no bright light) and the satellite is still.
  */
 static bool keep_louvers_pointed_away() {
-  if (turnWentWrongWay) return true;                      // do not keep spinning the wrong way; vent and wait for a fix
   spinControlOn = true;                                   // the gyroscope holds the satellite still between turns
   switch (pointingStep) {
     case POINT_TURNING:
       return false;                                       // track_turn() is handling it
     case POINT_SETTLING:
-      if (millis() - settleStartedMs < TCS_TURN_SETTLE_MS) return false;
+      // Wait until it has been still for TCS_TURN_SETTLE_MS, but never longer than TCS_TURN_SETTLE_MAX_MS in total:
+      // if it is still creeping, look at the light anyway and turn back if it is more than 15 deg off.
+      if (millis() - settleStartedMs < TCS_TURN_SETTLE_MS && millis() - settleBeganMs < TCS_TURN_SETTLE_MAX_MS) return false;
       pointingStep = POINT_IDLE;
       if (!isnan(ventErrorDeg)) {
         say(String("[TCS] After turning: louvers ") + String(fabs(ventErrorDeg), 0) + " deg from pointing away from the light.");
@@ -627,10 +634,8 @@ static void run_state_machine() {
         hold_still();   
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
       } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
-        say("[TCS] Could not turn away from the light in time, venting without turning.");
-        hold_still();   
-        ventAnyway = true;                                // stop COOLING from sending us back to turning
-        enter_state(TCS_COOLING);
+        say("[TCS] Turning away is taking a while; venting at full control while it keeps turning.");
+        enter_state(TCS_COOLING);                         // COOLING keeps pointing too, so turning never stops
       } else if (keep_louvers_pointed_away()) {
         enter_state(TCS_COOLING);                         // aimed at cold space (or no bright light at all)
       }
@@ -651,8 +656,6 @@ static void run_state_machine() {
         hold_still();   
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
-      } else if (ventAnyway) {
-        hold_still();                                      // turning did not work earlier: just vent
       } else {
         read_sun_sensor();
         // Only judge "drifted far" while the satellite is still (readings taken mid-turn are not trusted).
