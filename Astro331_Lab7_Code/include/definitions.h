@@ -78,7 +78,7 @@
 #define TCS_LOUVER_SERVO_PIN        4     // Signal wire GPIO for the single louver servo (confirmed by the team)
 #define TCS_SERVO_PULSE_MIN_US      500   // Pulse length at 0 degrees, in microseconds (SG92R datasheet: about 500)
 #define TCS_SERVO_PULSE_MAX_US      2400  // Pulse length at 180 degrees, in microseconds (SG92R datasheet: about 2400)
-#define TCS_LOUVER_CLOSED_ANGLE_DEG 0.0   // Servo angle when the louvers are closed (confirmed on the hardware)
+#define TCS_LOUVER_CLOSED_ANGLE_DEG 180.0 // Servo angle when the louvers are closed (confirmed on the hardware)
 #define TCS_LOUVER_OPEN_ANGLE_DEG   90.0  // Servo angle when the louvers are fully open (confirmed on the hardware)
 #define TCS_SERVO_LEDC_CHANNEL      0     // ESP32 PWM channel for the servo. Channels 15 and 14 are used by the wheel motor driver, so keep this low.
 #define TCS_SERVO_PWM_BITS          14    // Resolution of the servo pulse timing (14 bits = very fine steps)
