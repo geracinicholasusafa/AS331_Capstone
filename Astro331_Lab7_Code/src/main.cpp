@@ -172,6 +172,9 @@ void setup() {
   //----------------------------------------------
   // Initialize Serial link with XBee
   //----------------------------------------------
+  // Give the radio a 1 KB send buffer (must be set before begin). Without it, printing a long line at
+  // 9600 baud makes the board wait until most of the line has gone out, about 0.13 s for each live TCS line.
+  Xbee.setTxBufferSize(1024);
   Xbee.begin(9600,SERIAL_8N1, XBEE_RX, XBEE_TX);  // Begin MCU <> XBee communication
   Xbee.setTimeout(20);
   // Hold the XBee receive wire at its "idle" level when no XBee is plugged in. Without this the
