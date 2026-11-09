@@ -109,12 +109,19 @@
 #define TCS_LIGHT_DIRECTION_OFFSET_DEG 0.0 // Added to the measured light direction to line the sensors up with the body axes.
                                           // Normally left at 0 and set from the GUI's "Calibrate" button instead (command 20, saved in the board's memory).
 
-// --- Turning: "look, turn, settle, look again" ---
+// --- Turning: "look, turn, settle, look again", steered by the gyroscope ---
 // With the satellite still, the light sensors say how far off the louvers are. The satellite then turns by that
-// angle, measured with the IMU gyroscope (the light sensors are ignored mid-turn), stops, settles, and looks again.
-#define TCS_TURN_THROTTLE          0.40   // Wheel throttle during a turn (must be enough to start the motor; lower = slower, gentler)
-#define TCS_TURN_STOP_EARLY_DEG    5.0    // Stop the wheel this many degrees before the end, because the satellite coasts a little (tune on the bench)
-#define TCS_TURN_SETTLE_MS         2000   // Wait this long with the wheel stopped before looking at the light again
+// angle, measured with the IMU gyroscope (the light sensors are ignored mid-turn), slows to a stop, and looks again.
+// The wheel is never just switched off mid-move (its spin would leak into the satellite): the gyroscope steers it
+// to the spin speed wanted, including zero when holding still.
+#define TCS_TURN_MAX_RATE_DEG_S    15.0   // Fastest the satellite is allowed to turn, degrees per second (lower = gentler)
+#define TCS_TURN_RATE_PER_DEG      0.3    // Slowing down near the end: wanted turn speed per degree still to go (20 deg left -> 6 deg/s)
+#define TCS_SPIN_GAIN              0.02   // How quickly the wheel throttle changes per deg/s of spin-speed error, every second.
+                                          // Too small: sluggish, slow to stop. Too big: twitchy / back and forth. (PROPOSED, tune on the bench)
+#define TCS_TURN_KICK_THROTTLE     0.35   // Throttle jumped to at the start of a turn so the motor overcomes its friction straight away
+#define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
+#define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
+#define TCS_TURN_SETTLE_MS         2000   // Must be still this long before looking at the light again
 #define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
 #define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
 #define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
