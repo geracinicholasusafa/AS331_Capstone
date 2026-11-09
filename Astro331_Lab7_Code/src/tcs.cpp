@@ -641,9 +641,10 @@ static void run_state_machine() {
   switch (state) {
 
     case TCS_NORMAL:
-      // Temperature is fine: louvers rest, wheel stopped. Just watch for trouble.
+      // Temperature is fine: louvers rest. The louver face is still kept pointed away from the light, so it never
+      // drifts round to face the lamp (holding with the gyro alone slowly drifts, because no gyro is perfect).
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
-      hold_still();   
+      keep_louvers_pointed_away();
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
       if (panelTempC > holdTempC) {
         ventAnyway = false;
@@ -717,9 +718,10 @@ static void run_state_machine() {
       break;
 
     case TCS_RECOVERY:
-      // Heating or cooling is finished: louvers to rest, wheel stopped, wait a moment, then back to NORMAL.
+      // Heating or cooling is finished: louvers to rest, wait a moment, then back to NORMAL.
+      // Keep pointing the louvers away from the light meanwhile.
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
-      hold_still();   
+      keep_louvers_pointed_away();
       if (time_in_state_ms() >= TCS_RECOVERY_HOLD_MS) enter_state(TCS_NORMAL);
       break;
 
@@ -1179,8 +1181,8 @@ void tcs_print_status() {
   say(point);
   if (!tcs_enabled) say("[TCS] Why no turning: automatic control is OFF (press Hold or send 10).");
   else if (state == TCS_FAULT) say("[TCS] Why no turning: FAULT stops the wheel (send 12 to clear).");
-  else if (state == TCS_NORMAL || state == TCS_RECOVERY || state == TCS_COLD_DETECTED)
-    say("[TCS] Why no turning: panel is not above the hold temperature, so there is nothing to vent.");
+  else if (state == TCS_COLD_DETECTED)
+    say("[TCS] Why no turning: panel is too cold, so it just holds still with the louvers shut.");
   else if (turnWentWrongWay) say("[TCS] Why no turning: the last turn went the WRONG way, so turning is paused for 30 s. If it keeps happening, "
                                  "flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION in definitions.h and re-upload.");
   else if (ventAnyway) {
