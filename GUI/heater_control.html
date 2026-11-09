@@ -115,7 +115,7 @@
       </div>
       <div class="readouts" style="grid-template-columns: 1fr">
         <div class="readout"><div class="label">Light comes from</div><div class="value" id="vLightDir" style="font-size:18px">--</div></div>
-        <div class="readout"><div class="label">Louvers (on the &minus;Y face)</div><div class="value" id="vLouver" style="font-size:18px">--</div></div>
+        <div class="readout"><div class="label">Louvers (on the &minus;X face)</div><div class="value" id="vLouver" style="font-size:18px">--</div></div>
         <div class="readout"><div class="label">Louvers pointed away from light?</div><div class="value" id="vAim" style="font-size:18px">--</div></div>
         <div class="readout"><div class="label">Light sensors +X / &minus;X / +Y / &minus;Y</div><div class="value" id="vLightRaw" style="font-size:15px">--</div></div>
       </div>
@@ -548,11 +548,11 @@ function drawCharts() {
 // 3D view of the CubeSat and the incoming light (plain canvas, no internet needed)
 //
 // Directions match the firmware's light sensors: +X is 0 degrees, +Y is 90, -X is 180, -Y is 270,
-// and +Z is "up". The louvers are on the -Y face. The light arrow points the way the light travels,
-// from the light toward the satellite.
+// and +Z is "up". The louvers are on the -X face, solar panels on +X. The light arrow points the way
+// the light travels, from the light toward the satellite.
 // ---------------------------------------------------------------------------------------------
 let latestView = { lightDir: NaN, lightTotal: NaN, px: NaN, mx: NaN, py: NaN, my: NaN, louver: NaN, ventError: NaN };
-let viewYaw = -0.6, viewPitch = 0.45;        // camera angles in radians; dragging changes them
+let viewYaw = 0.6, viewPitch = 0.45;         // camera angles in radians (starts looking at the louver face); dragging changes them
 const LOUVER_SLATS = 4;                 // the real satellite has four louvers
 
 function compassName(deg) {
@@ -623,10 +623,10 @@ function drawCube() {
 
   // The six faces of the cube (the cube spans -1 to +1 on each axis).
   const faces = [
-    { n: [ 1, 0, 0], pts: [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]],       label: '+X' },
-    { n: [-1, 0, 0], pts: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]],   label: '−X' },
-    { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y  solar panels' },
-    { n: [ 0,-1, 0], pts: [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]],   label: '−Y  louvers', louvers: true },
+    { n: [ 1, 0, 0], pts: [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]],       label: '+X  solar panels' },
+    { n: [-1, 0, 0], pts: [[-1,1,-1],[-1,-1,-1],[-1,-1,1],[-1,1,1]],   label: '−X  louvers', louvers: true },
+    { n: [ 0, 1, 0], pts: [[1,1,-1],[-1,1,-1],[-1,1,1],[1,1,1]],       label: '+Y' },
+    { n: [ 0,-1, 0], pts: [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]],   label: '−Y' },
     { n: [ 0, 0, 1], pts: [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],       label: '+Z  breadboard' },
     { n: [ 0, 0,-1], pts: [[-1,1,-1],[1,1,-1],[1,-1,-1],[-1,-1,-1]],   label: '' }
   ];
@@ -638,35 +638,36 @@ function drawCube() {
       label: f.label, center: project(f.n) });
   }
 
-  // Louvers on the -Y face: LOUVER_SLATS slats, each hinged along its TOP edge. Closed, the slat hangs
+  // Louvers on the -X face: LOUVER_SLATS slats, each hinged along its TOP edge. Closed, the slat hangs
   // flat against the face. Opening swings its BOTTOM edge outward and up; at 100% it sticks straight out.
   const open = Number.isFinite(v.louver) ? Math.max(0, Math.min(100, v.louver)) / 100 : 0;
   const swing = open * Math.PI / 2;
   const slatPitch = 2 / LOUVER_SLATS, slatLength = slatPitch * 0.92;
   for (let i = 0; i < LOUVER_SLATS; i++) {
     const hingeZ = -1 + (i + 1) * slatPitch - 0.03;                     // top edge of this slat
-    const outY = -1.03 - Math.sin(swing) * slatLength;                  // where the bottom edge has swung to
+    const outX = -1.03 - Math.sin(swing) * slatLength;                  // where the bottom edge has swung to
     const bottomZ = hingeZ - Math.cos(swing) * slatLength;
-    addPart([0, -1, 0], null,
-      [[-0.85, -1.03, hingeZ], [0.85, -1.03, hingeZ], [0.85, outY, bottomZ], [-0.85, outY, bottomZ]],
+    addPart([-1, 0, 0], null,
+      [[-1.03, 0.85, hingeZ], [-1.03, -0.85, hingeZ], [outX, -0.85, bottomZ], [outX, 0.85, bottomZ]],
       [205, 215, 228], '#3b4656');
   }
 
   // Breadboard on the top (+Z) face: two halves with the centre channel between them.
-  for (const [x0, x1] of [[-0.9, -0.05], [0.05, 0.9]]) {
-    addPart([0, 0, 1], null, [[x0, -0.9, 1.02], [x1, -0.9, 1.02], [x1, 0.9, 1.02], [x0, 0.9, 1.02]],
+  for (const [y0, y1] of [[-0.9, -0.05], [0.05, 0.9]]) {
+    addPart([0, 0, 1], null, [[-0.9, y0, 1.02], [0.9, y0, 1.02], [0.9, y1, 1.02], [-0.9, y1, 1.02]],
       [240, 240, 236], '#8a8f98');
   }
 
-  // Solar panels on the +Y face (opposite the louvers): four square cells in a 2 x 2 grid.
-  for (const [x0, x1] of [[-0.9, -0.04], [0.04, 0.9]]) {
+  // Solar panels on the +X face (opposite the louvers): four square cells in a 2 x 2 grid.
+  for (const [y0, y1] of [[-0.9, -0.04], [0.04, 0.9]]) {
     for (const [z0, z1] of [[-0.9, -0.04], [0.04, 0.9]]) {
-      addPart([0, 1, 0], null, [[x0, 1.02, z0], [x1, 1.02, z0], [x1, 1.02, z1], [x0, 1.02, z1]], [32, 52, 115], '#9db4e6');
+      addPart([1, 0, 0], null, [[1.02, y0, z0], [1.02, y1, z0], [1.02, y1, z1], [1.02, y0, z1]], [32, 52, 115], '#9db4e6');
     }
   }
 
-  // Reaction wheel motor on the top face, in the corner on the louver (-Y) side and to the right (+X).
-  const motor = { x: 0.6, y: -0.6, r: 0.28, bottom: 1.03, top: 1.38, sides: 16 };
+  // Reaction wheel motor on the top face, in the corner on the louver (-X) side and to the right
+  // (as seen looking at the louvers from outside, right is -Y).
+  const motor = { x: -0.6, y: -0.6, r: 0.28, bottom: 1.03, top: 1.38, sides: 16 };
   const ring = z => Array.from({ length: motor.sides }, (_, k) => {
     const t = k / motor.sides * Math.PI * 2;
     return [motor.x + motor.r * Math.cos(t), motor.y + motor.r * Math.sin(t), z];

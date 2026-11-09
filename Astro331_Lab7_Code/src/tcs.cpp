@@ -442,24 +442,20 @@ static void run_state_machine() {
       break;
 
     case TCS_SUN_AVOID:
-      // Too hot. Keep the louvers closed (so the Sun does not shine in) while the wheel turns the
-      // satellite until the louvers face away from the brightest light. The louver controller is paused
-      // (its built-up part is kept), so venting carries on from where it was once we are aimed.
-      set_louvers(TCS_LOUVER_CLOSED_PERCENT);
-      lastRegulateMs = 0;                                 // do not count the turning time as venting time
+      // Too hot, and the louvers are well off "directly away from the light". The wheel turns the
+      // satellite to fix that, and AT THE SAME TIME the louver controller keeps venting (the louvers are
+      // never forced shut here), so the panel keeps cooling while it turns.
+      set_louvers(regulate_louver_opening());
       read_sun_sensor();
 
       if (cooled_enough()) {
         set_wheel(0);
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
-      } else if (isnan(ventErrorDeg)) {
-        set_wheel(0);                                     // no bright light: any direction is fine, vent now
-        enter_state(TCS_COOLING);
-      } else if (fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
-        set_wheel(0);                                     // aimed at cold space
+      } else if (isnan(ventErrorDeg) || fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
+        set_wheel(0);                                     // aimed at cold space (or no bright light at all)
         enter_state(TCS_COOLING);
       } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
-        say("[TCS] Could not turn away from the light in time, venting anyway.");
+        say("[TCS] Could not turn away from the light in time, venting without turning.");
         set_wheel(0);
         ventAnyway = true;                                // stop COOLING from sending us back to turning
         enter_state(TCS_COOLING);
@@ -469,24 +465,31 @@ static void run_state_machine() {
       break;
 
     case TCS_COOLING:
-      // Closed loop: keep adjusting the louver opening to hold the panel AT the hold temperature.
-      // It stays here for as long as there is heat to get rid of; the louvers simply settle at
-      // whatever opening balances the heater.
+      // Closed loop: keep adjusting the louver opening to hold the panel AT the hold temperature,
+      // AND keep the louvers pointed away from the light the whole time. Small pointing errors are
+      // corrected here with the wheel without touching the louvers; only a big drift is reported as
+      // SUN_AVOID (where the louvers still keep venting).
       set_louvers(regulate_louver_opening());
-      set_wheel(0);
       if (louversShutSinceMs != 0 && millis() - louversShutSinceMs > TCS_REGULATE_IDLE_MS &&
           !isnan(panelTempC) && panelTempC < holdTempC) {
+        set_wheel(0);
         say("[TCS] No heat to vent for a while, louvers stay shut.");
         enter_state(TCS_RECOVERY);                        // heat source gone: stop regulating
       } else if (TCS_LOUVER_MAX_OPEN_MS > 0 && time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
+        set_wheel(0);
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
-      } else if (!ventAnyway) {
-        // If the satellite has drifted so the louvers face the light again, close them and turn back.
+      } else if (ventAnyway) {
+        set_wheel(0);                                     // turning did not work earlier: just vent
+      } else {
         read_sun_sensor();
-        if (louverPercent > TCS_LOUVER_CLOSED_PERCENT && !isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
-          say("[TCS] Louvers drifted toward the light, turning back.");
+        if (isnan(ventErrorDeg) || fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
+          set_wheel(0);                                   // aimed well enough (or no bright light): hold still
+        } else if (fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
+          say("[TCS] Louvers drifted toward the light, turning back (still venting).");
           enter_state(TCS_SUN_AVOID);
+        } else {
+          turn_toward_vent_heading();                     // small drift: nudge back while venting
         }
       }
       break;

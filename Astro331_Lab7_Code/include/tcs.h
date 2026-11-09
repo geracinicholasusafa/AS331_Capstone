@@ -20,8 +20,8 @@
 /** The steps the TCS can be in. Only one is active at a time. */
 enum TcsState {
   TCS_NORMAL,         ///< Temperature is fine. Nothing to do except watch.
-  TCS_SUN_AVOID,      ///< Too hot. Louvers stay closed while the reaction wheel turns them away from the brightest light.
-  TCS_COOLING,        ///< Too hot and pointed away from the light (or no light). Louvers open to vent heat.
+  TCS_SUN_AVOID,      ///< Too hot and pointed well off "away from the light". The wheel turns the satellite while the louvers keep venting.
+  TCS_COOLING,        ///< Too hot and pointed away from the light (or no light). Louvers vent, and the wheel keeps correcting small drifts.
   TCS_COLD_DETECTED,  ///< Too cold. Louvers closed to keep heat in, waiting to warm up.
   TCS_RECOVERY,       ///< Heating/cooling is done. Louvers return to rest before going back to NORMAL.
   TCS_FAULT           ///< Something is wrong. Everything goes to its safest position and stays there.
