@@ -130,8 +130,13 @@
 #define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
 #define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
 #define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
-#define TCS_GYRO_DIRECTION         1      // +1 or -1. Flip if the gyro counts the turn backwards (the turn never ends, or "wrong way" appears while it turns the right way)
+#define TCS_GYRO_DIRECTION         -1     // +1 or -1. Must match the light sensors' direction of rotation. Set to -1 after log TCS_log_data005:
+                                          // the light moved +X -> +Y (clockwise) while the gyro read counter-clockwise, so when the satellite
+                                          // reached the target and the wheel tried to stop it, it pushed it further round instead
 #define TCS_GYRO_BIAS_SAMPLES      100    // Gyro readings averaged at power-up to learn its "still" reading (100 x 20 ms = 2 s; keep the satellite still then)
+#define TCS_GYRO_MAX_BIAS_DEG_S    3.0    // A real gyro zero error is small. A power-up average bigger than this (or a jumpy one) means the
+                                          // satellite was moving, so it is thrown away and 0 is used (log 005 had a wrong 25 deg/s zero)
+#define TCS_GYRO_STILL_SPREAD_DEG_S 1.0   // Readings during that average must vary less than this (standard deviation) to count as "still"
 
 // --- Reaction wheel ---
 #define TCS_MAX_WHEEL_RPM          400.0  // Team limit: the wheel must never spin faster than this

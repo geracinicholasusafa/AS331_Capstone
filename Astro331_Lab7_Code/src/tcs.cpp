@@ -319,6 +319,7 @@ static float headingDeg = 0;              // Which way the satellite faces, adde
                                           // (not wrapped to 0-360, so a plot has no jumps; + = counter-clockwise seen from +Z)
 static float gyroBiasDegPerS = 0;         // The gyroscope's small reading when perfectly still (subtracted so the heading does not drift)
 static float gyroBiasSum = 0;
+static float gyroBiasSquares = 0;         // (for checking the readings were steady)
 static int   gyroBiasSamples = 0;
 
 /**
@@ -339,8 +340,21 @@ static bool read_gyro_if_due(float *seconds) {
   float raw = imu_sensor.gyrZ() * TCS_GYRO_DIRECTION;
   if (gyroBiasSamples < TCS_GYRO_BIAS_SAMPLES) {          // still measuring the "still" reading
     gyroBiasSum += raw;
+    gyroBiasSquares += raw * raw;
     gyroBiasSamples++;
-    if (gyroBiasSamples == TCS_GYRO_BIAS_SAMPLES) gyroBiasDegPerS = gyroBiasSum / TCS_GYRO_BIAS_SAMPLES;
+    if (gyroBiasSamples == TCS_GYRO_BIAS_SAMPLES) {
+      float mean = gyroBiasSum / TCS_GYRO_BIAS_SAMPLES;
+      float spread = sqrt(max(0.0f, gyroBiasSquares / TCS_GYRO_BIAS_SAMPLES - mean * mean));
+      // Only trust it if the satellite was really still: a small, steady reading.
+      if (fabs(mean) <= TCS_GYRO_MAX_BIAS_DEG_S && spread <= TCS_GYRO_STILL_SPREAD_DEG_S) {
+        gyroBiasDegPerS = mean;
+        say(String("[TCS] Gyro zero measured: ") + String(mean, 2) + " deg/s.");
+      } else {
+        gyroBiasDegPerS = 0;
+        say(String("[TCS] Satellite was moving at power-up (gyro read ") + String(mean, 1) + " deg/s), so the gyro zero was not "
+            "measured. Using 0. For the best heading, power up with the satellite still.");
+      }
+    }
   }
   spinRateDegPerS = raw - gyroBiasDegPerS;
   headingDeg += spinRateDegPerS * dt;
