@@ -287,6 +287,7 @@ static void stop_turning() {
   wheelCommand = 0;
   set_wheel(0);
   pointingStep = POINT_IDLE;
+  lastGyroMs = 0;                                  // so the next start does not count this pause as one huge time step
 }
 
 /** Keeps the satellite still with the wheel (no turning, no looking at the light). */
@@ -324,6 +325,7 @@ static void track_turn() {
   uint32_t now = millis();
   if (now - lastGyroMs < TCS_GYRO_READ_INTERVAL_MS) return;
   float seconds = (lastGyroMs == 0) ? 0.0 : (now - lastGyroMs) / 1000.0f;
+  if (seconds > 0.2f) seconds = 0.0f;                     // a long gap (e.g. a blocking command) is not one real time step
   lastGyroMs = now;
 
   imu_sensor.getAGMT();                                   // read the IMU
@@ -574,6 +576,7 @@ static void run_state_machine() {
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
       if (panelTempC > holdTempC) {
         ventAnyway = false;
+        turnWentWrongWay = false;                         // a new heat-up gets a fresh try at turning
         reset_louver_controller();                        // start the louver controller fresh
         enter_state(TCS_SUN_AVOID);                       // above the hold temperature: first aim the louvers away from the light
       } else if (panelTempC < holdTempC - TCS_COLD_MARGIN_C) {
@@ -1064,6 +1067,24 @@ void tcs_print_status() {
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   line += String(", logging=") + (loggingOn ? logFileName : "off");
   say(line);
+
+  // Pointing details: what the wheel is doing and why (helps when the satellite does not turn).
+  const char* stepName = pointingStep == POINT_TURNING ? "TURNING" : (pointingStep == POINT_SETTLING ? "SETTLING" : "IDLE");
+  String point = String("[TCS] Pointing: step=") + stepName + ", spin_control=" + (spinControlOn ? "on" : "off");
+  point += ", wheel_cmd=" + String(wheelCommand, 2) + ", spin=" + String(spinRateDegPerS, 1) + "deg/s";
+  if (pointingStep == POINT_TURNING) point += ", turned=" + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + "deg";
+  point += ", light_total=" + String(lightTotal, 0) + " (need " + String(TCS_SUN_MIN_LIGHT_COUNTS) + ")";
+  say(point);
+  if (!tcs_enabled) say("[TCS] Why no turning: automatic control is OFF (press Hold or send 10).");
+  else if (state == TCS_FAULT) say("[TCS] Why no turning: FAULT stops the wheel (send 12 to clear).");
+  else if (state == TCS_NORMAL || state == TCS_RECOVERY || state == TCS_COLD_DETECTED)
+    say("[TCS] Why no turning: panel is not above the hold temperature, so there is nothing to vent.");
+  else if (turnWentWrongWay) say("[TCS] Why no turning: the last turn went the WRONG way, so turning is paused. "
+                                 "Flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION in definitions.h, re-upload, then press Hold.");
+  else if (ventAnyway) say("[TCS] Why no turning: an earlier turn took too long; it will retry next time the panel heats up.");
+  else if (isnan(ventErrorDeg)) say("[TCS] Why no turning: too dark, no bright light to turn away from.");
+  else if (pointingStep == POINT_IDLE && fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) say("[TCS] Louvers already pointed away from the light.");
+
   if (isnan(panelTempC)) {   // explain why there is no temperature
     say(String("[TCS] No temperature: ") + describe_thermocouple_fault(lastFaultBits));
   }
