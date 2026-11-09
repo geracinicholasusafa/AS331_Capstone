@@ -65,7 +65,7 @@
                                         // keeps coming, closing the louvers would just overheat the panel. Over-cooling is
                                         // still prevented, because the louvers close once the panel is below the hold temperature.
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
-#define TCS_SUN_AVOID_TIMEOUT_MS 90000  // If turning away from the Sun takes this long, vent without turning for TCS_TURN_RETRY_MS, then try again
+#define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)
 
 // --- Louvers (percentages: 0 = closed, 100 = fully open) ---
 #define TCS_LOUVER_CLOSED_PERCENT   0.0
@@ -109,39 +109,29 @@
 #define TCS_LIGHT_DIRECTION_OFFSET_DEG 0.0 // Added to the measured light direction to line the sensors up with the body axes.
                                           // Normally left at 0 and set from the GUI's "Calibrate" button instead (command 20, saved in the board's memory).
 
-// --- Pointing the louvers away from the light, continuously (gyroscope + reaction wheel) ---
-// How far off the louvers are is tracked all the time: the gyroscope updates it 50 times a second, and each light
-// reading taken while turning slowly corrects it. The wanted turn speed is proportional to how far off it is, and
-// the wheel is steered so the gyro's spin speed matches. The wheel is never just switched off mid-move (its spin
-// would leak into the satellite).
+// --- Turning: "look, turn, settle, look again", steered by the gyroscope ---
+// With the satellite still, the light sensors say how far off the louvers are. The satellite then turns by that
+// angle, measured with the IMU gyroscope (the light sensors are ignored mid-turn), slows to a stop, and looks again.
+// The wheel is never just switched off mid-move (its spin would leak into the satellite): the gyroscope steers it
+// to the spin speed wanted, including zero when holding still.
 #define TCS_TURN_MAX_RATE_DEG_S    15.0   // Fastest the satellite is allowed to turn, degrees per second (lower = gentler)
-#define TCS_TURN_RATE_PER_DEG      0.3    // Wanted turn speed per degree off (20 deg off -> 6 deg/s). Bigger = snappier, smaller = smoother
-#define TCS_POINT_DEADBAND_DEG     3.0    // Closer than this to directly away from the light: stop turning and hold still
-#define TCS_POINT_MIN_RATE_DEG_S   3.0    // Outside that, never ask for a slower turn than this (a gentler push cannot beat the mount's friction)
-#define TCS_SUN_TRUST_RATE_DEG_S   5.0    // Light readings are used to correct the estimate only while turning slower than this
-                                          // (the light sensors lag and blur during fast turns; the gyro carries on in between)
-#define TCS_SPIN_GAIN              0.20   // How quickly the wheel throttle changes per deg/s of spin-speed error, every second.
+#define TCS_TURN_RATE_PER_DEG      0.3    // Slowing down near the end: wanted turn speed per degree still to go (20 deg left -> 6 deg/s)
+#define TCS_SPIN_GAIN              0.10   // How quickly the wheel throttle changes per deg/s of spin-speed error, every second.
                                           // The wheel only pushes the satellite while its speed is CHANGING, so this sets how hard it pushes.
                                           // Satellite does not move (mount friction wins): raise it. Twitchy / back and forth: lower it.
-#define TCS_SPIN_MAX_THROTTLE      0.85   // Largest throttle the controller uses (stays under the 400 RPM fault limit)
-#define TCS_WHEEL_BLEED_PER_S      0.05   // While still and on target, the wheel throttle eases back toward 0 by this much per second,
+                                          // (Was 0.02, too weak to beat the test mount's friction.)
+#define TCS_SPIN_MAX_THROTTLE      0.85   // Largest throttle the turning controller uses (stays under the 400 RPM fault limit)
+#define TCS_WHEEL_BLEED_PER_S      0.05   // While holding still, the wheel throttle eases back toward 0 by this much per second,
                                           // slowly enough that friction keeps the satellite still (stops the wheel creeping up to 400 RPM)
-#define TCS_HOLD_DEADBAND_DEG_S    0.5    // While holding, spin slower than this is ignored (gyro wobble); anything faster is pushed back
-#define TCS_TURN_RETRY_MS          30000  // After turning away took too long (TCS_SUN_AVOID_TIMEOUT_MS), vent without turning this long, then try again
-#define TCS_WHEEL_SATURATED_MS     3000   // Wheel at its limit this long -> report it
-// Ratchet for a mount with friction: when the wheel has run out of speed and still needs to push, wind it back
-// slowly to the opposite limit (friction holds the satellite still meanwhile), then push again.
-#define TCS_WHEEL_LIMIT_PUSH_MS    1000   // Pushing against the wheel's limit this long -> start winding back
-#define TCS_WHEEL_WINDBACK_PER_S   0.30   // Wind-back speed, throttle per second (0.85 to -0.85 takes about 6 s).
-                                          // If the satellite turns backwards while winding back, lower this
-#define TCS_WINDBACK_PAUSE_RATE_DEG_S 3.0 // Winding back pauses if the satellite is dragged the wrong way faster than this
-#define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read (20 ms = 50 times a second)
-#define TCS_GYRO_DIRECTION         -1     // +1 or -1. Must match the light sensors' direction of rotation. Set to -1 after log TCS_log_data005:
-                                          // the light moved +X -> +Y (clockwise) while the gyro read counter-clockwise, and with +1 the wheel sped the spin up
+#define TCS_TURN_KICK_THROTTLE     0.35   // Throttle jumped to at the start of a turn so the motor overcomes its friction straight away
+#define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
+#define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
+#define TCS_TURN_SETTLE_MS         2000   // Must be still this long before looking at the light again
+#define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
+#define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
+#define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
+#define TCS_GYRO_DIRECTION         1      // +1 or -1. Flip if the gyro counts the turn backwards (the turn never ends, or "wrong way" appears while it turns the right way)
 #define TCS_GYRO_BIAS_SAMPLES      100    // Gyro readings averaged at power-up to learn its "still" reading (100 x 20 ms = 2 s; keep the satellite still then)
-#define TCS_GYRO_MAX_BIAS_DEG_S    3.0    // A real gyro zero error is small. A power-up average bigger than this (or a jumpy one) means the
-                                          // satellite was moving, so it is thrown away and 0 is used (log 005 had a wrong 25 deg/s zero)
-#define TCS_GYRO_STILL_SPREAD_DEG_S 1.0   // Readings during that average must vary less than this (standard deviation) to count as "still"
 
 // --- Reaction wheel ---
 #define TCS_MAX_WHEEL_RPM          400.0  // Team limit: the wheel must never spin faster than this

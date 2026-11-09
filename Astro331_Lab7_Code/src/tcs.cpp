@@ -68,8 +68,7 @@ static float rawLightDirectionDeg = NAN; // Light direction straight from the se
 static float lightOffsetDeg = TCS_LIGHT_DIRECTION_OFFSET_DEG; // Calibration: added to the raw direction (command 20)
 static float lightTotal = 0;          // Sum of the four light sensors (0 to about 16000); bigger = brighter
 static float lightPlusX = 0, lightMinusX = 0, lightPlusY = 0, lightMinusY = 0;  // Each light sensor (0 to 4095)
-static bool  ventAnyway = false;      // True once turning away took too long: vent without turning for TCS_TURN_RETRY_MS
-static uint32_t ventAnywaySinceMs = 0; // When that started
+static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
 
 /*---------------------------------------------------------------------------------------------*/
 // 2. Small helpers
@@ -253,80 +252,74 @@ static void read_sun_sensor() {
 }
 
 /*
- * Pointing the louvers away from the light, continuously, with the gyroscope and the reaction wheel.
+ * Pointing the louvers away from the light: "look, turn, settle, look again", steered by the gyroscope.
  *
- * Two layers:
- *   1. "How far off are we?"  The light sensors say how far the louvers are from directly away from the light,
- *      but only twice a second, and they are not trustworthy while the satellite turns quickly. The gyroscope
- *      says how far the satellite has turned since then, 50 times a second. So the estimate is:
- *          off now = (off at the last good light reading) + (how far we have turned since that reading)
- *      Each new light reading taken while turning slowly (under TCS_SUN_TRUST_RATE_DEG_S) resets the estimate,
- *      so gyro drift never builds up. During a fast turn, or if the light is briefly lost, the gyro carries on.
- *   2. "Steer the wheel."  The wanted spin speed is proportional to how far off we are (slows down as it gets
- *      close; zero inside TCS_POINT_DEADBAND_DEG). Every 20 ms the wheel throttle is nudged so the gyro's spin
- *      speed matches the wanted spin speed. The wheel is never just switched off mid-move, because its stored
- *      spin would leak into the satellite.
+ * Why the wheel is never simply switched off mid-move: to turn the satellite, the wheel spins the other way and
+ * holds that "spin" (angular momentum). If the motor is switched off, the wheel's spin leaks back into the
+ * satellite and it keeps turning past the target. So instead the wheel is always steered by the IMU gyroscope
+ * (which measures how fast the satellite is spinning):
+ *   - TURNING:  aim for a spin speed that gets smaller as the satellite nears the target, so it slows down and
+ *               arrives gently. The angle turned is added up from the gyroscope; light sensors are ignored.
+ *   - SETTLING: aim for zero spin, and wait until the satellite has been still for TCS_TURN_SETTLE_MS.
+ *   - IDLE:     still aim for zero spin (hold still), then look at the light; if it is off, turn again.
  *
- * This runs the whole time the TCS is too hot (SUN_AVOID and COOLING), so the louvers stay facing away.
+ * How the wheel is steered: the satellite's spin speed follows the wheel's speed (the faster the wheel, the faster
+ * the satellite turns the other way). So every 20 ms, if the satellite spins faster than wanted, the wheel
+ * throttle is nudged one way; slower than wanted, the other way. It settles at the throttle that gives the
+ * wanted spin speed.
  */
+enum PointingStep { POINT_IDLE, POINT_TURNING, POINT_SETTLING };
+
+static PointingStep pointingStep = POINT_IDLE;
 static bool     spinControlOn = false;    // Is the gyroscope steering the wheel? (off = wheel stopped, e.g. FAULT)
-static bool     trackingLight = false;    // true = steer the louvers away from the light; false = just hold still
 static float    wheelCommand = 0;         // Throttle the spin controller wants (before TCS_WHEEL_DIRECTION). + turns the satellite clockwise (-)
 static float    spinRateDegPerS = 0;      // Latest satellite spin speed from the gyroscope (+ = counter-clockwise seen from +Z)
-static float    wantedSpinDegPerS = 0;    // Spin speed the pointing controller is asking for
+static float    turnTargetDeg = 0;        // How far this turn should go (+ = counter-clockwise seen from +Z)
+static float    turnDoneDeg = 0;          // How far we have turned so far, added up from the gyroscope
+static uint32_t turnStartedMs = 0;
 static uint32_t lastGyroMs = 0;           // When the gyroscope was last read (to know how much time passed)
-static uint32_t wheelAtLimitSinceMs = 0;  // When the wheel reached its speed limit (0 = not at the limit)
-static bool     wheelSaturatedReported = false;
-static bool     windingBack = false;      // Ratchet: winding the wheel back slowly after it ran out of speed
-static float    windBackTarget = 0;       // Throttle the wind-back is heading for (the opposite limit)
-static uint32_t pushingIntoLimitSinceMs = 0; // When the controller started pushing against the wheel's limit (0 = not)
+static uint32_t settleStartedMs = 0;      // When the satellite last became still
+static bool     turnWentWrongWay = false; // Set when the gyro saw the satellite turning the opposite way
+
+/** Stops the wheel completely (used for FAULT and when the TCS is switched off). */
+static void stop_turning() {
+  spinControlOn = false;
+  wheelCommand = 0;
+  set_wheel(0);
+  pointingStep = POINT_IDLE;
+}
+
+/** Keeps the satellite still with the wheel (no turning, no looking at the light). */
+static void hold_still() {
+  spinControlOn = true;
+  if (pointingStep == POINT_TURNING) {             // abandon the turn, just stop spinning
+    pointingStep = POINT_SETTLING;
+    settleStartedMs = millis();
+  }
+}
+
+/**
+ * Starts a turn that should line the louvers up, using the latest light reading.
+ * If the louvers are ventErrorDeg ahead of the ideal direction, the satellite must turn back by that much.
+ */
+static void start_turn() {
+  turnTargetDeg = -ventErrorDeg;
+  turnDoneDeg = 0;
+  turnStartedMs = millis();
+  turnWentWrongWay = false;
+  // Kick: jump the throttle past the point where the motor starts to move, in the right direction.
+  float kickDirection = (turnTargetDeg < 0) ? 1.0 : -1.0;
+  if (wheelCommand * kickDirection < TCS_TURN_KICK_THROTTLE) wheelCommand = kickDirection * TCS_TURN_KICK_THROTTLE;
+  spinControlOn = true;
+  pointingStep = POINT_TURNING;
+  say(String("[TCS] Turning ") + String(turnTargetDeg, 0) + " deg to point the louvers away from the light.");
+}
 
 static float headingDeg = 0;              // Which way the satellite faces, added up from the gyroscope since logging started
                                           // (not wrapped to 0-360, so a plot has no jumps; + = counter-clockwise seen from +Z)
 static float gyroBiasDegPerS = 0;         // The gyroscope's small reading when perfectly still (subtracted so the heading does not drift)
 static float gyroBiasSum = 0;
-static float gyroBiasSquares = 0;         // (for checking the readings were steady)
 static int   gyroBiasSamples = 0;
-
-static float offAtLightReadingDeg = NAN;  // How far off the louvers were at the last trusted light reading (NAN = none yet)
-static float headingAtLightReadingDeg = 0;// The gyro heading at that moment
-
-/** Stops the wheel completely (used for FAULT and when the TCS is switched off). */
-static void stop_turning() {
-  spinControlOn = false;
-  trackingLight = false;
-  windingBack = false;
-  pushingIntoLimitSinceMs = 0;
-  wheelCommand = 0;
-  wantedSpinDegPerS = 0;
-  set_wheel(0);
-}
-
-/** Keeps the satellite still with the wheel (no pointing at anything). */
-static void hold_still() {
-  spinControlOn = true;
-  trackingLight = false;
-}
-
-/**
- * Best estimate of how far the louvers are from directly away from the light, right now (degrees, -180 to 180).
- * Turning the satellite counter-clockwise (+) moves the light clockwise as seen from the satellite, which adds
- * to this error, so the turn since the last light reading is simply added on.
- */
-static float pointing_error_now() {
-  if (isnan(offAtLightReadingDeg)) return NAN;
-  return wrap_to_180(offAtLightReadingDeg + (headingDeg - headingAtLightReadingDeg));
-}
-
-/** Uses a new light reading (called twice a second, right after read_sun_sensor()). */
-static void update_pointing_estimate() {
-  if (isnan(ventErrorDeg)) return;                                     // too dark: keep going on the gyro
-  bool slowEnough = fabs(spinRateDegPerS) < TCS_SUN_TRUST_RATE_DEG_S;
-  if (slowEnough || isnan(offAtLightReadingDeg)) {
-    offAtLightReadingDeg = ventErrorDeg;
-    headingAtLightReadingDeg = headingDeg;
-  }
-}
 
 /**
  * Reads the gyroscope every TCS_GYRO_READ_INTERVAL_MS (called on every pass of loop(), TCS on or off).
@@ -346,21 +339,8 @@ static bool read_gyro_if_due(float *seconds) {
   float raw = imu_sensor.gyrZ() * TCS_GYRO_DIRECTION;
   if (gyroBiasSamples < TCS_GYRO_BIAS_SAMPLES) {          // still measuring the "still" reading
     gyroBiasSum += raw;
-    gyroBiasSquares += raw * raw;
     gyroBiasSamples++;
-    if (gyroBiasSamples == TCS_GYRO_BIAS_SAMPLES) {
-      float mean = gyroBiasSum / TCS_GYRO_BIAS_SAMPLES;
-      float spread = sqrt(max(0.0f, gyroBiasSquares / TCS_GYRO_BIAS_SAMPLES - mean * mean));
-      // Only trust it if the satellite was really still: a small, steady reading.
-      if (fabs(mean) <= TCS_GYRO_MAX_BIAS_DEG_S && spread <= TCS_GYRO_STILL_SPREAD_DEG_S) {
-        gyroBiasDegPerS = mean;
-        say(String("[TCS] Gyro zero measured: ") + String(mean, 2) + " deg/s.");
-      } else {
-        gyroBiasDegPerS = 0;
-        say(String("[TCS] Satellite was moving at power-up (gyro read ") + String(mean, 1) + " deg/s), so the gyro zero was not "
-            "measured. Using 0. For the best heading, power up with the satellite still.");
-      }
-    }
+    if (gyroBiasSamples == TCS_GYRO_BIAS_SAMPLES) gyroBiasDegPerS = gyroBiasSum / TCS_GYRO_BIAS_SAMPLES;
   }
   spinRateDegPerS = raw - gyroBiasDegPerS;
   headingDeg += spinRateDegPerS * dt;
@@ -369,94 +349,84 @@ static bool read_gyro_if_due(float *seconds) {
 }
 
 /**
- * The spin controller. Runs after each new gyroscope reading (every TCS_GYRO_READ_INTERVAL_MS).
+ * The spin controller. Runs after each new gyroscope reading (every TCS_GYRO_READ_INTERVAL_MS), because the
+ * angle turned is added up from many quick readings.
  */
 static void track_turn(float seconds) {
   if (!spinControlOn) return;
   uint32_t now = millis();
 
-  // 1. What spin speed do we want? Pointing: proportional to how far off we are. Holding: zero.
-  wantedSpinDegPerS = 0;
-  float off = trackingLight ? pointing_error_now() : NAN;
-  if (!isnan(off) && fabs(off) > TCS_POINT_DEADBAND_DEG) {
-    // Off by +X degrees means the satellite must turn -X, so the wanted spin is the opposite sign.
-    // Never slower than TCS_POINT_MIN_RATE_DEG_S, or close to the target the push is too weak to beat friction.
-    float speed = constrain(fabs(off) * TCS_TURN_RATE_PER_DEG, TCS_POINT_MIN_RATE_DEG_S, TCS_TURN_MAX_RATE_DEG_S);
-    wantedSpinDegPerS = (off > 0) ? -speed : speed;
+  // What spin speed do we want right now?
+  float wantedRate = 0;                                   // settling / holding: stand still
+  float remaining = 0;
+  if (pointingStep == POINT_TURNING) {
+    turnDoneDeg += spinRateDegPerS * seconds;
+    remaining = turnTargetDeg - turnDoneDeg;
+    // Slow down near the end: wanted speed shrinks with the angle left, up to a gentle maximum.
+    wantedRate = constrain(remaining * TCS_TURN_RATE_PER_DEG, -TCS_TURN_MAX_RATE_DEG_S, TCS_TURN_MAX_RATE_DEG_S);
   }
 
-  // 2. Change the wheel speed so the spin matches. The wheel only pushes the satellite while its speed is
-  // CHANGING, so the bigger the spin-speed error, the faster the wheel speed changes (= the harder the push).
-  // Spinning too fast in + -> push the throttle + (that turns the satellite -), and the other way round.
-  float rateError = spinRateDegPerS - wantedSpinDegPerS;
-  bool closeEnough = (wantedSpinDegPerS == 0) && fabs(rateError) < TCS_HOLD_DEADBAND_DEG_S;
-
-  // Ratchet. On a mount with friction the wheel runs out of speed after a push and can push no further. Then the
-  // wheel is wound back slowly to its opposite limit (slowly enough that friction holds the satellite still),
-  // ready for another push. Each push-and-wind-back cycle moves the satellite a step toward the target.
-  bool pushingIntoLimit = fabs(wheelCommand) >= TCS_SPIN_MAX_THROTTLE - 0.01f && rateError * wheelCommand > 0 &&
-                          fabs(rateError) > TCS_HOLD_DEADBAND_DEG_S;
-  if (!windingBack) {
-    if (pushingIntoLimit) {
-      if (pushingIntoLimitSinceMs == 0) pushingIntoLimitSinceMs = now;
-      if (now - pushingIntoLimitSinceMs > TCS_WHEEL_LIMIT_PUSH_MS) {
-        windingBack = true;
-        windBackTarget = (wheelCommand > 0) ? -TCS_SPIN_MAX_THROTTLE : TCS_SPIN_MAX_THROTTLE;
-        say("[TCS] Wheel at its limit: winding it back slowly (friction holds the satellite), then pushing again.");
-      }
-    } else {
-      pushingIntoLimitSinceMs = 0;
-    }
-  }
-  if (windingBack) {
-    // If winding back is dragging the satellite the wrong way, pause until it stops.
-    bool draggingBackwards = fabs(spinRateDegPerS) > TCS_WINDBACK_PAUSE_RATE_DEG_S && spinRateDegPerS * wantedSpinDegPerS < 0;
-    if (!draggingBackwards) {
-      float step = TCS_WHEEL_WINDBACK_PER_S * seconds;
-      if (fabs(windBackTarget - wheelCommand) <= step) {
-        wheelCommand = windBackTarget;
-        windingBack = false;
-        pushingIntoLimitSinceMs = 0;
-      } else {
-        wheelCommand += (windBackTarget > wheelCommand) ? step : -step;
-      }
-    }
-  } else if (!closeEnough) {
+  // Change the wheel speed. The wheel only pushes the satellite while its speed is CHANGING, so the bigger the
+  // spin-speed error, the faster the wheel speed changes (= the harder the push), enough to overcome the mount's
+  // friction. Spinning too fast in + -> push the throttle + (that turns the satellite -), and the other way round.
+  float rateError = spinRateDegPerS - wantedRate;
+  bool closeEnough = (pointingStep != POINT_TURNING) && fabs(rateError) < TCS_STILL_RATE_DEG_S;
+  if (!closeEnough) {                                     // when holding still, ignore tiny gyro wobble
     wheelCommand += TCS_SPIN_GAIN * rateError * seconds;
   } else {
-    // Still and on target: slowly let the wheel spin down toward zero. Slowly enough that friction keeps the
-    // satellite from moving (and if it does move, the pointing pulls it back), so the wheel does not creep up
-    // to the 400 RPM limit.
+    // Holding still: slowly let the wheel spin down toward zero. Slowly enough that friction keeps the satellite
+    // from moving, so the wheel does not creep up to the 400 RPM limit after each turn.
     float bleed = TCS_WHEEL_BLEED_PER_S * seconds;
     wheelCommand = (fabs(wheelCommand) <= bleed) ? 0 : wheelCommand - (wheelCommand > 0 ? bleed : -bleed);
   }
   wheelCommand = constrain(wheelCommand, -TCS_SPIN_MAX_THROTTLE, TCS_SPIN_MAX_THROTTLE);
   set_wheel(wheelCommand * TCS_WHEEL_DIRECTION);
 
-  // Wheel at its speed limit: it cannot push any harder that way, so the satellite may drift. Report it once.
-  if (fabs(wheelCommand) >= TCS_SPIN_MAX_THROTTLE - 0.01f) {
-    if (wheelAtLimitSinceMs == 0) wheelAtLimitSinceMs = now;
-    if (!wheelSaturatedReported && now - wheelAtLimitSinceMs > TCS_WHEEL_SATURATED_MS) {
-      wheelSaturatedReported = true;
-      say("[TCS] Reaction wheel at its speed limit: it cannot push harder that way, so pointing may slip.");
+  bool still = fabs(spinRateDegPerS) < TCS_STILL_RATE_DEG_S;
+  if (pointingStep == POINT_TURNING) {
+    bool rightWay = (turnDoneDeg * turnTargetDeg) >= 0;
+    if (fabs(remaining) < TCS_TURN_DONE_DEG && still) {
+      pointingStep = POINT_SETTLING;                      // arrived and nearly stopped
+      settleStartedMs = now;
+    } else if (!rightWay && fabs(turnDoneDeg) > TCS_TURN_WRONG_WAY_DEG) {
+      turnWentWrongWay = true;
+      say("[TCS] Satellite is turning the wrong way. Flip TCS_WHEEL_DIRECTION (or TCS_GYRO_DIRECTION) in definitions.h.");
+      stop_turning();
+    } else if (now - turnStartedMs > TCS_TURN_TIMEOUT_MS) {
+      say(String("[TCS] Turn took too long (") + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + " deg). Stopping to look again.");
+      pointingStep = POINT_SETTLING;
+      settleStartedMs = now;
     }
-  } else {
-    wheelAtLimitSinceMs = 0;
-    wheelSaturatedReported = false;
+  } else if (pointingStep == POINT_SETTLING && !still) {
+    settleStartedMs = now;                                // must be still for the whole settle time
   }
 }
 
 /**
- * Keeps the louvers pointed away from the brightest light, continuously. Called twice a second.
- * Returns true when the louvers are within TCS_VENT_ALIGN_TOL_DEG of directly away (or there is no bright light).
+ * Keeps the louvers pointed away from the brightest light. Called twice a second.
+ * Returns true when the louvers are aimed (or there is no bright light) and the satellite is still.
  */
 static bool keep_louvers_pointed_away() {
-  spinControlOn = true;
-  trackingLight = true;
-  update_pointing_estimate();
-  float off = pointing_error_now();
-  if (isnan(off)) return true;                            // no bright light seen yet: any direction is fine
-  return fabs(off) < TCS_VENT_ALIGN_TOL_DEG;
+  if (turnWentWrongWay) return true;                      // do not keep spinning the wrong way; vent and wait for a fix
+  spinControlOn = true;                                   // the gyroscope holds the satellite still between turns
+  switch (pointingStep) {
+    case POINT_TURNING:
+      return false;                                       // track_turn() is handling it
+    case POINT_SETTLING:
+      if (millis() - settleStartedMs < TCS_TURN_SETTLE_MS) return false;
+      pointingStep = POINT_IDLE;
+      if (!isnan(ventErrorDeg)) {
+        say(String("[TCS] After turning: louvers ") + String(fabs(ventErrorDeg), 0) + " deg from pointing away from the light.");
+      }
+      break;                                              // look again below
+    case POINT_IDLE:
+      break;
+  }
+  // Satellite is still: look at the light.
+  if (isnan(ventErrorDeg)) return true;                   // no bright light: any direction is fine
+  if (fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) return true;   // close enough
+  start_turn();
+  return false;
 }
 
 /** Measures reaction wheel speed from how far the encoder moved since the last check. */
@@ -638,6 +608,7 @@ static void run_state_machine() {
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
       if (panelTempC > holdTempC) {
         ventAnyway = false;
+        turnWentWrongWay = false;                         // a new heat-up gets a fresh try at turning
         reset_louver_controller();                        // start the louver controller fresh
         enter_state(TCS_SUN_AVOID);                       // above the hold temperature: first aim the louvers away from the light
       } else if (panelTempC < holdTempC - TCS_COLD_MARGIN_C) {
@@ -656,10 +627,9 @@ static void run_state_machine() {
         hold_still();   
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
       } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
-        say("[TCS] Could not turn away from the light in time, venting without turning for a while.");
-        hold_still();
-        ventAnyway = true;                                // COOLING pauses turning, then tries again after TCS_TURN_RETRY_MS
-        ventAnywaySinceMs = millis();
+        say("[TCS] Could not turn away from the light in time, venting without turning.");
+        hold_still();   
+        ventAnyway = true;                                // stop COOLING from sending us back to turning
         enter_state(TCS_COOLING);
       } else if (keep_louvers_pointed_away()) {
         enter_state(TCS_COOLING);                         // aimed at cold space (or no bright light at all)
@@ -681,18 +651,13 @@ static void run_state_machine() {
         hold_still();   
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
-      } else if (ventAnyway && millis() - ventAnywaySinceMs < TCS_TURN_RETRY_MS) {
-        hold_still();                                      // turning did not work just now: vent, and try again later
+      } else if (ventAnyway) {
+        hold_still();                                      // turning did not work earlier: just vent
       } else {
-        if (ventAnyway) {
-          ventAnyway = false;
-          say("[TCS] Trying again to point the louvers away from the light.");
-        }
         read_sun_sensor();
         // Only judge "drifted far" while the satellite is still (readings taken mid-turn are not trusted).
-        keep_louvers_pointed_away();                      // keep steering the louvers away from the light while venting
-        float offNow = pointing_error_now();
-        bool driftedFar = !isnan(offNow) && fabs(offNow) > TCS_VENT_LOST_TOL_DEG;
+        bool driftedFar = pointingStep == POINT_IDLE && !isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG;
+        keep_louvers_pointed_away();                      // look / turn / settle while venting
         if (driftedFar) {
           say("[TCS] Louvers drifted toward the light, turning back (still venting).");
           enter_state(TCS_SUN_AVOID);
@@ -921,9 +886,9 @@ static void log_row_if_due() {
   row += "," + number_for_csv(headingDeg, 1);
   row += "," + number_for_csv(spinRateDegPerS, 2);
   row += "," + number_for_csv(wheelCommand * TCS_WHEEL_DIRECTION, 3);
-  row += "," + String(trackingLight ? 1 : 0);
-  row += "," + number_for_csv(trackingLight ? pointing_error_now() : NAN, 1);
-  row += "," + number_for_csv(wantedSpinDegPerS, 2);
+  row += "," + String((int)pointingStep);
+  row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnTargetDeg, 1) : String(""));
+  row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnDoneDeg, 1) : String(""));
 
   if (logFile.println(row) == 0) {      // the card did not accept the row (removed, full, or failing)
     loggingOn = false;
@@ -947,7 +912,7 @@ bool tcs_start_logging() {
   logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,hold_C,"
                   "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C,"
                   "light_px,light_mx,light_py,light_my,light_raw_dir_deg,sun_in_room_deg,"
-                  "heading_deg,spin_deg_per_s,wheel_cmd,tracking,pointing_error_deg,wanted_spin_deg_per_s");
+                  "heading_deg,spin_deg_per_s,wheel_cmd,point_step,turn_target_deg,turn_done_deg");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
   headingDeg = 0;                       // heading is measured from where the satellite faces when logging starts
@@ -1013,6 +978,7 @@ void tcs_enable() {
   faultReason = TCS_FAULT_NONE;
   badReadCount = 0;
   ventAnyway = false;
+  turnWentWrongWay = false;
   state = TCS_NORMAL;
   stateStartMs = millis();
   rateReferenceTempC = NAN;               // restart the rate measurement from scratch
@@ -1158,22 +1124,21 @@ void tcs_print_status() {
   say(line);
 
   // Pointing details: what the wheel is doing and why (helps when the satellite does not turn).
-  String point = String("[TCS] Pointing: ") + (trackingLight ? "tracking (louvers away from light)" : (spinControlOn ? "holding still" : "wheel off"));
-  point += ", off_now=" + (isnan(pointing_error_now()) ? String("n/a") : String(pointing_error_now(), 1) + "deg");
-  point += ", wanted_spin=" + String(wantedSpinDegPerS, 1) + "deg/s";
+  const char* stepName = pointingStep == POINT_TURNING ? "TURNING" : (pointingStep == POINT_SETTLING ? "SETTLING" : "IDLE");
+  String point = String("[TCS] Pointing: step=") + stepName + ", spin_control=" + (spinControlOn ? "on" : "off");
   point += ", wheel_cmd=" + String(wheelCommand, 2) + ", spin=" + String(spinRateDegPerS, 1) + "deg/s";
+  if (pointingStep == POINT_TURNING) point += ", turned=" + String(turnDoneDeg, 0) + " of " + String(turnTargetDeg, 0) + "deg";
   point += ", light_total=" + String(lightTotal, 0) + " (need " + String(TCS_SUN_MIN_LIGHT_COUNTS) + ")";
   say(point);
   if (!tcs_enabled) say("[TCS] Why no turning: automatic control is OFF (press Hold or send 10).");
   else if (state == TCS_FAULT) say("[TCS] Why no turning: FAULT stops the wheel (send 12 to clear).");
   else if (state == TCS_NORMAL || state == TCS_RECOVERY || state == TCS_COLD_DETECTED)
     say("[TCS] Why no turning: panel is not above the hold temperature, so there is nothing to vent.");
-  else if (ventAnyway) {
-    long secondsLeft = ((long)TCS_TURN_RETRY_MS - (long)(millis() - ventAnywaySinceMs)) / 1000;
-    say("[TCS] Why no turning: an earlier turn took too long; it tries again " + String(secondsLeft < 0 ? 0 : secondsLeft) + " s from now.");
-  }
+  else if (turnWentWrongWay) say("[TCS] Why no turning: the last turn went the WRONG way, so turning is paused. "
+                                 "Flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION in definitions.h, re-upload, then press Hold.");
+  else if (ventAnyway) say("[TCS] Why no turning: an earlier turn took too long; it will retry next time the panel heats up.");
   else if (isnan(ventErrorDeg)) say("[TCS] Why no turning: too dark, no bright light to turn away from.");
-  else if (!isnan(pointing_error_now()) && fabs(pointing_error_now()) < TCS_VENT_ALIGN_TOL_DEG) say("[TCS] Louvers already pointed away from the light.");
+  else if (pointingStep == POINT_IDLE && fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) say("[TCS] Louvers already pointed away from the light.");
 
   if (isnan(panelTempC)) {   // explain why there is no temperature
     say(String("[TCS] No temperature: ") + describe_thermocouple_fault(lastFaultBits));
