@@ -287,7 +287,6 @@ static void stop_turning() {
   wheelCommand = 0;
   set_wheel(0);
   pointingStep = POINT_IDLE;
-  lastGyroMs = 0;                                  // so the next start does not count this pause as one huge time step
 }
 
 /** Keeps the satellite still with the wheel (no turning, no looking at the light). */
@@ -316,20 +315,46 @@ static void start_turn() {
   say(String("[TCS] Turning ") + String(turnTargetDeg, 0) + " deg to point the louvers away from the light.");
 }
 
+static float headingDeg = 0;              // Which way the satellite faces, added up from the gyroscope since logging started
+                                          // (not wrapped to 0-360, so a plot has no jumps; + = counter-clockwise seen from +Z)
+static float gyroBiasDegPerS = 0;         // The gyroscope's small reading when perfectly still (subtracted so the heading does not drift)
+static float gyroBiasSum = 0;
+static int   gyroBiasSamples = 0;
+
 /**
- * The spin controller. Called on every pass of loop() (about every 10 ms) and does its work every
- * TCS_GYRO_READ_INTERVAL_MS, because the angle turned is added up from many quick gyroscope readings.
+ * Reads the gyroscope every TCS_GYRO_READ_INTERVAL_MS (called on every pass of loop(), TCS on or off).
+ * Updates the spin speed and the heading. Returns true when a new reading was taken, with the time since
+ * the last one in *seconds.
+ * The first TCS_GYRO_BIAS_SAMPLES readings after power-up are averaged to measure the gyro's "still" reading,
+ * so keep the satellite still for the first few seconds after power-up.
  */
-static void track_turn() {
-  if (!spinControlOn) return;
+static bool read_gyro_if_due(float *seconds) {
   uint32_t now = millis();
-  if (now - lastGyroMs < TCS_GYRO_READ_INTERVAL_MS) return;
-  float seconds = (lastGyroMs == 0) ? 0.0 : (now - lastGyroMs) / 1000.0f;
-  if (seconds > 0.2f) seconds = 0.0f;                     // a long gap (e.g. a blocking command) is not one real time step
+  if (lastGyroMs != 0 && now - lastGyroMs < TCS_GYRO_READ_INTERVAL_MS) return false;
+  float dt = (lastGyroMs == 0) ? 0.0 : (now - lastGyroMs) / 1000.0f;
+  if (dt > 0.2f) dt = 0.0f;                               // a long gap (e.g. a blocking command) is not one real time step
   lastGyroMs = now;
 
   imu_sensor.getAGMT();                                   // read the IMU
-  spinRateDegPerS = imu_sensor.gyrZ() * TCS_GYRO_DIRECTION;
+  float raw = imu_sensor.gyrZ() * TCS_GYRO_DIRECTION;
+  if (gyroBiasSamples < TCS_GYRO_BIAS_SAMPLES) {          // still measuring the "still" reading
+    gyroBiasSum += raw;
+    gyroBiasSamples++;
+    if (gyroBiasSamples == TCS_GYRO_BIAS_SAMPLES) gyroBiasDegPerS = gyroBiasSum / TCS_GYRO_BIAS_SAMPLES;
+  }
+  spinRateDegPerS = raw - gyroBiasDegPerS;
+  headingDeg += spinRateDegPerS * dt;
+  *seconds = dt;
+  return true;
+}
+
+/**
+ * The spin controller. Runs after each new gyroscope reading (every TCS_GYRO_READ_INTERVAL_MS), because the
+ * angle turned is added up from many quick readings.
+ */
+static void track_turn(float seconds) {
+  if (!spinControlOn) return;
+  uint32_t now = millis();
 
   // What spin speed do we want right now?
   float wantedRate = 0;                                   // settling / holding: stand still
@@ -806,7 +831,7 @@ void tcs_set_louvers_manual(float openPercent) {
 
 /*---------------------------------------------------------------------------------------------*/
 // SD card CSV log
-// Writes one row per second to its own file on the SD card, so the data can be opened in Excel,
+// Writes one row every TCS_LOG_INTERVAL_MS (4 per second) to its own file on the SD card, so the data can be opened in Excel,
 // MATLAB or Python and plotted afterwards. Empty cells mean "no valid reading".
 /*---------------------------------------------------------------------------------------------*/
 
@@ -845,6 +870,25 @@ static void log_row_if_due() {
   row += "," + number_for_csv(lightTotal, 0);
   row += "," + number_for_csv(peltierPowerPercent, 1);
   row += "," + number_for_csv(peltierTargetC, 1);
+  // Sun sensing: the four raw sensors, the direction before calibration, and the Sun's direction in the room.
+  // light_dir_deg is where the light is relative to the satellite; adding the heading gives where it is in the
+  // room, which should stay steady while the satellite turns (the proof the satellite knows where the Sun is).
+  row += "," + number_for_csv(lightPlusX, 0) + "," + number_for_csv(lightMinusX, 0);
+  row += "," + number_for_csv(lightPlusY, 0) + "," + number_for_csv(lightMinusY, 0);
+  row += "," + number_for_csv(rawLightDirectionDeg, 1);
+  float sunInRoomDeg = NAN;
+  if (!isnan(lightDirectionDeg)) {
+    sunInRoomDeg = fmod(lightDirectionDeg + headingDeg, 360.0f);
+    if (sunInRoomDeg < 0) sunInRoomDeg += 360.0f;
+  }
+  row += "," + number_for_csv(sunInRoomDeg, 1);
+  // Attitude control: heading and spin from the gyroscope, what the wheel is told, and the turn in progress.
+  row += "," + number_for_csv(headingDeg, 1);
+  row += "," + number_for_csv(spinRateDegPerS, 2);
+  row += "," + number_for_csv(wheelCommand * TCS_WHEEL_DIRECTION, 3);
+  row += "," + String((int)pointingStep);
+  row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnTargetDeg, 1) : String(""));
+  row += "," + (pointingStep == POINT_TURNING ? number_for_csv(turnDoneDeg, 1) : String(""));
 
   if (logFile.println(row) == 0) {      // the card did not accept the row (removed, full, or failing)
     loggingOn = false;
@@ -852,7 +896,7 @@ static void log_row_if_due() {
     say("[TCS] ERROR: could not write to the SD card, logging stopped.");
     return;
   }
-  logFile.flush();                      // save every row, so pulling the power loses at most one second
+  logFile.flush();                      // save every row, so pulling the power loses at most one row
   logRowCount++;
 }
 
@@ -866,9 +910,12 @@ bool tcs_start_logging() {
     return false;
   }
   logFile.println("time_ms,elapsed_s,temp1_C,temp2_C,rate_C_per_s,state,state_id,tcs_on,hold_C,"
-                  "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C");
+                  "louver_pct,wheel_rpm,vent_error_deg,light_dir_deg,light_total,peltier_pct,peltier_target_C,"
+                  "light_px,light_mx,light_py,light_my,light_raw_dir_deg,sun_in_room_deg,"
+                  "heading_deg,spin_deg_per_s,wheel_cmd,point_step,turn_target_deg,turn_done_deg");
   logFile.flush();
   logFile.getName(logFileName, sizeof(logFileName));
+  headingDeg = 0;                       // heading is measured from where the satellite faces when logging starts
 
   loggingOn = true;
   logStartMs = millis();
@@ -892,8 +939,9 @@ bool tcs_telemetry_enabled()    { return telemetryOn; }
 
 void tcs_update() {
   send_telemetry_if_due();                                        // live plot data, once per second
-  log_row_if_due();                                               // SD card CSV log, once per second (if started)
-  if (tcs_enabled) track_turn();                                  // follow a turn with the gyroscope, every loop pass
+  log_row_if_due();                                               // SD card CSV log, 4 rows per second (if started)
+  float gyroSeconds;
+  if (read_gyro_if_due(&gyroSeconds) && tcs_enabled) track_turn(gyroSeconds);   // heading always; wheel steering when on
   if (millis() - lastUpdateMs < TCS_UPDATE_INTERVAL_MS) return;   // not time yet
   lastUpdateMs = millis();
 

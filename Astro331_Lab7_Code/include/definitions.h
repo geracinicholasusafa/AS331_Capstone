@@ -58,7 +58,7 @@
 // --- Timing ---
 #define TCS_UPDATE_INTERVAL_MS   500    // How often the TCS reads sensors and decides what to do
 #define TCS_TELEMETRY_INTERVAL_MS 1000  // How often a temperature line is sent for the live plot (1000 = once per second)
-#define TCS_LOG_INTERVAL_MS      1000   // How often a row is written to the SD card CSV log (1000 = once per second)
+#define TCS_LOG_INTERVAL_MS      250    // How often a row is written to the SD card CSV log (250 = four times a second, fine enough to plot a turn)
 #define TCS_LOG_FILE_PREFIX      "TCS_log" // Log files are named TCS_log_data001.csv, TCS_log_data002.csv, ... (a new one each time logging starts)
 #define TCS_LOUVER_MAX_OPEN_MS   0      // If above 0: louvers may stay open this long while cooling, then they close.
                                         // 0 = no time limit. Off because the team sets the internal heat by hand: if the heat
@@ -131,6 +131,7 @@
 #define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
 #define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
 #define TCS_GYRO_DIRECTION         1      // +1 or -1. Flip if the gyro counts the turn backwards (the turn never ends, or "wrong way" appears while it turns the right way)
+#define TCS_GYRO_BIAS_SAMPLES      100    // Gyro readings averaged at power-up to learn its "still" reading (100 x 20 ms = 2 s; keep the satellite still then)
 
 // --- Reaction wheel ---
 #define TCS_MAX_WHEEL_RPM          400.0  // Team limit: the wheel must never spin faster than this
