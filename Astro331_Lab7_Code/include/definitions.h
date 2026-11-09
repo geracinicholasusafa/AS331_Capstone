@@ -65,7 +65,7 @@
                                         // keeps coming, closing the louvers would just overheat the panel. Over-cooling is
                                         // still prevented, because the louvers close once the panel is below the hold temperature.
 #define TCS_RECOVERY_HOLD_MS     5000   // How long RECOVERY waits with louvers at rest before returning to NORMAL (PROPOSED)
-#define TCS_SUN_AVOID_TIMEOUT_MS 60000  // If turning away from the Sun takes this long, vent anyway (heat must escape) (PROPOSED)
+#define TCS_SUN_AVOID_TIMEOUT_MS 90000  // If turning away from the Sun takes this long, vent without turning for TCS_TURN_RETRY_MS, then try again
 
 // --- Louvers (percentages: 0 = closed, 100 = fully open) ---
 #define TCS_LOUVER_CLOSED_PERCENT   0.0
@@ -124,10 +124,16 @@
 #define TCS_WHEEL_BLEED_PER_S      0.05   // While holding still, the wheel throttle eases back toward 0 by this much per second,
                                           // slowly enough that friction keeps the satellite still (stops the wheel creeping up to 400 RPM)
 #define TCS_TURN_KICK_THROTTLE     0.35   // Throttle jumped to at the start of a turn so the motor overcomes its friction straight away
-#define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still"
+#define TCS_STILL_RATE_DEG_S       2.0    // Spinning slower than this counts as "still" (for "arrived" and "settled")
+#define TCS_HOLD_DEADBAND_DEG_S    0.5    // While holding, spin slower than this is ignored (gyro wobble); anything faster is pushed back.
+                                          // Was 2 deg/s, which let slow drifts go uncorrected.
 #define TCS_TURN_DONE_DEG          3.0    // Within this many degrees of the end of the turn (and still) counts as arrived
 #define TCS_TURN_SETTLE_MS         2000   // Must be still this long before looking at the light again
-#define TCS_TURN_TIMEOUT_MS        20000  // A single turn taking longer than this is stopped (then it looks again)
+#define TCS_TURN_SETTLE_MAX_MS     8000   // ...but never wait longer than this: if it keeps drifting, look at the light and correct anyway
+#define TCS_TURN_TIMEOUT_MS        40000  // A single turn taking longer than this is stopped (then it looks again). Long enough for a long-way-round turn
+#define TCS_TURN_RETRY_MS          30000  // After turning away took too long (TCS_SUN_AVOID_TIMEOUT_MS), vent without turning this long, then try again
+#define TCS_WHEEL_UNLOAD_THROTTLE  0.50   // Wheel throttle above this counts as "spinning fast": the next turn goes the long way round to slow it
+#define TCS_WHEEL_SATURATED_MS     3000   // Wheel at its limit this long -> report it
 #define TCS_TURN_WRONG_WAY_DEG     20.0   // Turned this far the WRONG way -> stop and report (flip TCS_WHEEL_DIRECTION or TCS_GYRO_DIRECTION)
 #define TCS_GYRO_READ_INTERVAL_MS  20     // How often the gyroscope is read during a turn (20 ms = 50 times a second)
 #define TCS_GYRO_DIRECTION         1      // +1 or -1. Flip if the gyro counts the turn backwards (the turn never ends, or "wrong way" appears while it turns the right way)
