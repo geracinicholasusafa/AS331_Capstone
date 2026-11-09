@@ -16,6 +16,7 @@
 #include <Adafruit_MAX31855.h>            // Reads the thermocouple through the MAX31855 chip
 #include <TB9051FTGMotorCarrier.h>        // Reaction wheel motor driver
 #include <ESP32Encoder.h>                 // Reaction wheel speed sensor
+#include <Preferences.h>                  // Saves the light-sensor calibration in the board's memory (kept after power-off)
 #include "definitions.h"
 #include "sd_functions.h"                 // Creates the CSV log file on the SD card
 #include "tcs.h"
@@ -61,6 +62,8 @@ static uint32_t lastTelemetryMs = 0;  // When the last stream line was sent
 
 static float ventErrorDeg = NAN;     // How far the louvers are from pointing directly away from the brightest light
 static float lightDirectionDeg = NAN; // Where the brightest light comes from (0 = +X, 90 = +Y, 180 = -X, 270 = -Y). NAN if too dark
+static float rawLightDirectionDeg = NAN; // Light direction straight from the sensors, before the calibration offset
+static float lightOffsetDeg = TCS_LIGHT_DIRECTION_OFFSET_DEG; // Calibration: added to the raw direction (command 20)
 static float lightTotal = 0;          // Sum of the four light sensors (0 to about 16000); bigger = brighter
 static float lightPlusX = 0, lightMinusX = 0, lightPlusY = 0, lightMinusY = 0;  // Each light sensor (0 to 4095)
 static bool  ventAnyway = false;      // True once turning away took too long: vent regardless, heat must escape
@@ -228,13 +231,17 @@ static void read_sun_sensor() {
   if (totalLight < TCS_SUN_MIN_LIGHT_COUNTS) {
     ventErrorDeg = NAN;                                  // too dark: no bright light to avoid
     lightDirectionDeg = NAN;
+    rawLightDirectionDeg = NAN;
     return;
   }
 
   float sunX = (plusX - minusX) / totalLight;
   float sunY = (plusY - minusY) / totalLight;
-  float sunDirectionDeg = atan2(sunY, sunX) * RAD_TO_DEG;
-  if (sunDirectionDeg < 0) sunDirectionDeg += 360.0;     // 0 to 360 like the lab code
+  rawLightDirectionDeg = atan2(sunY, sunX) * RAD_TO_DEG;
+  // Add the calibration offset so the direction lines up with the satellite's faces, then keep it 0 to 360.
+  float sunDirectionDeg = rawLightDirectionDeg + lightOffsetDeg;
+  while (sunDirectionDeg < 0) sunDirectionDeg += 360.0;
+  while (sunDirectionDeg >= 360.0) sunDirectionDeg -= 360.0;
   lightDirectionDeg = sunDirectionDeg;
 
   // The ideal louver direction is exactly opposite the light (180 degrees away from it).
@@ -253,6 +260,59 @@ static void turn_toward_vent_heading() {
   // backwards. The wheel always spins the opposite way to the satellite, so it spins forwards.
   float direction = (ventErrorDeg > 0) ? 1.0 : -1.0;
   set_wheel(direction * push * TCS_WHEEL_DIRECTION);
+}
+
+static bool     correctingPointing = false;  // Is a pointing correction under way? (starts past 15 deg, ends inside 5 deg)
+static uint32_t nudgeStartedMs = 0;          // When the current short push started (0 = no push running)
+static uint32_t nudgeRestUntilMs = 0;        // No new push before this time, so the satellite can settle
+
+/** Stops turning and forgets any correction in progress. */
+static void stop_turning() {
+  set_wheel(0);
+  correctingPointing = false;
+  nudgeStartedMs = 0;
+}
+
+/**
+ * Ends a short push once it has lasted TCS_NUDGE_PULSE_MS. Called on every pass of loop() (not just twice
+ * a second), so the pushes are short and exact.
+ */
+static void end_nudge_if_due() {
+  if (nudgeStartedMs == 0 || millis() - nudgeStartedMs < TCS_NUDGE_PULSE_MS) return;
+  set_wheel(0);
+  nudgeStartedMs = 0;
+  nudgeRestUntilMs = millis() + TCS_NUDGE_REST_MS;
+}
+
+/**
+ * Keeps the louvers pointed away from the brightest light, gently. Returns true while they are aimed
+ * (holding still), false while a correction is under way.
+ *   - Within TCS_VENT_ALIGN_TOL_DEG: leave it alone.
+ *   - Past that, start a correction and keep at it until within TCS_VENT_SETTLE_TOL_DEG (the gap stops chatter).
+ *   - Far off (past TCS_NUDGE_ZONE_DEG): turn steadily.
+ *   - Closer: short pushes with a pause after each, so it does not overshoot and swing back.
+ */
+static bool keep_louvers_pointed_away() {
+  if (isnan(ventErrorDeg)) { stop_turning(); return true; }      // no bright light: nothing to avoid
+  float degreesOff = fabs(ventErrorDeg);
+
+  if (!correctingPointing && degreesOff > TCS_VENT_ALIGN_TOL_DEG) correctingPointing = true;
+  if (correctingPointing && degreesOff < TCS_VENT_SETTLE_TOL_DEG) stop_turning();
+  if (!correctingPointing) return true;
+
+  if (degreesOff > TCS_NUDGE_ZONE_DEG) {
+    nudgeStartedMs = 0;
+    turn_toward_vent_heading();                                 // far off: turn steadily
+    return false;
+  }
+  // Close: a short push, then a pause before the next one.
+  if (nudgeStartedMs == 0) {
+    if ((int32_t)(millis() - nudgeRestUntilMs) < 0) { set_wheel(0); return false; }   // still pausing
+    float direction = (ventErrorDeg > 0) ? 1.0 : -1.0;
+    set_wheel(direction * TCS_NUDGE_THROTTLE * TCS_WHEEL_DIRECTION);
+    nudgeStartedMs = millis();
+  }
+  return false;
 }
 
 /** Measures reaction wheel speed from how far the encoder moved since the last check. */
@@ -430,7 +490,7 @@ static void run_state_machine() {
     case TCS_NORMAL:
       // Temperature is fine: louvers rest, wheel stopped. Just watch for trouble.
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
-      set_wheel(0);
+      stop_turning();
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
       if (panelTempC > holdTempC) {
         ventAnyway = false;
@@ -449,18 +509,15 @@ static void run_state_machine() {
       read_sun_sensor();
 
       if (cooled_enough()) {
-        set_wheel(0);
+        stop_turning();
         enter_state(TCS_RECOVERY);                        // cooled off by itself; nothing to vent
-      } else if (isnan(ventErrorDeg) || fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
-        set_wheel(0);                                     // aimed at cold space (or no bright light at all)
-        enter_state(TCS_COOLING);
       } else if (time_in_state_ms() > TCS_SUN_AVOID_TIMEOUT_MS) {
         say("[TCS] Could not turn away from the light in time, venting without turning.");
-        set_wheel(0);
+        stop_turning();
         ventAnyway = true;                                // stop COOLING from sending us back to turning
         enter_state(TCS_COOLING);
-      } else {
-        turn_toward_vent_heading();
+      } else if (keep_louvers_pointed_away()) {
+        enter_state(TCS_COOLING);                         // aimed at cold space (or no bright light at all)
       }
       break;
 
@@ -472,24 +529,21 @@ static void run_state_machine() {
       set_louvers(regulate_louver_opening());
       if (louversShutSinceMs != 0 && millis() - louversShutSinceMs > TCS_REGULATE_IDLE_MS &&
           !isnan(panelTempC) && panelTempC < holdTempC) {
-        set_wheel(0);
+        stop_turning();
         say("[TCS] No heat to vent for a while, louvers stay shut.");
         enter_state(TCS_RECOVERY);                        // heat source gone: stop regulating
       } else if (TCS_LOUVER_MAX_OPEN_MS > 0 && time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
-        set_wheel(0);
+        stop_turning();
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
       } else if (ventAnyway) {
-        set_wheel(0);                                     // turning did not work earlier: just vent
+        stop_turning();                                   // turning did not work earlier: just vent
       } else {
         read_sun_sensor();
-        if (isnan(ventErrorDeg) || fabs(ventErrorDeg) < TCS_VENT_ALIGN_TOL_DEG) {
-          set_wheel(0);                                   // aimed well enough (or no bright light): hold still
-        } else if (fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
+        keep_louvers_pointed_away();                      // gentle corrections while venting
+        if (!isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
           say("[TCS] Louvers drifted toward the light, turning back (still venting).");
           enter_state(TCS_SUN_AVOID);
-        } else {
-          turn_toward_vent_heading();                     // small drift: nudge back while venting
         }
       }
       break;
@@ -497,21 +551,21 @@ static void run_state_machine() {
     case TCS_COLD_DETECTED:
       // Too cold: keep the louvers shut so no heat escapes, and wait for the satellite to warm up.
       set_louvers(TCS_LOUVER_CLOSED_PERCENT);
-      set_wheel(0);
+      stop_turning();
       if (!isnan(panelTempC) && panelTempC >= holdTempC - TCS_COLD_MARGIN_C + TCS_COOL_HYSTERESIS_C) enter_state(TCS_RECOVERY);
       break;
 
     case TCS_RECOVERY:
       // Heating or cooling is finished: louvers to rest, wheel stopped, wait a moment, then back to NORMAL.
       set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
-      set_wheel(0);
+      stop_turning();
       if (time_in_state_ms() >= TCS_RECOVERY_HOLD_MS) enter_state(TCS_NORMAL);
       break;
 
     case TCS_FAULT:
       // Safest position. Too hot -> louvers open so heat can escape. Anything else -> louvers closed.
       set_louvers(faultReason == TCS_FAULT_TOO_HOT ? TCS_LOUVER_OPEN_PERCENT : TCS_LOUVER_CLOSED_PERCENT);
-      set_wheel(0);
+      stop_turning();
       break;
   }
 }
@@ -543,7 +597,39 @@ bool tcs_init(uint8_t thermocouple1ChipSelectPin, uint8_t thermocouple2ChipSelec
   } else {
     Serial.println("[INFO] MAX31855 #2 online.");
   }
+
+  // Load the light-sensor calibration saved by command 20 (if there is one).
+  Preferences saved;
+  saved.begin("tcs", true);                                  // true = read only
+  lightOffsetDeg = saved.getFloat("light_off", TCS_LIGHT_DIRECTION_OFFSET_DEG);
+  saved.end();
+  Serial.println(String("[INFO] Light direction calibration: ") + String(lightOffsetDeg, 1) + " deg");
   return ok;
+}
+
+bool tcs_calibrate_light_direction(float actualDirectionDeg) {
+  Preferences saved;
+  if (actualDirectionDeg < 0) {                              // negative = forget the calibration
+    lightOffsetDeg = TCS_LIGHT_DIRECTION_OFFSET_DEG;
+    saved.begin("tcs", false);
+    saved.remove("light_off");
+    saved.end();
+    say(String("[TCS] Light calibration cleared (offset ") + String(lightOffsetDeg, 1) + " deg).");
+    return true;
+  }
+  read_sun_sensor();                                         // fresh reading
+  if (isnan(rawLightDirectionDeg)) {
+    say("[TCS] Too dark to calibrate: shine the lamp on the satellite and try again.");
+    return false;
+  }
+  lightOffsetDeg = wrap_to_180(actualDirectionDeg - rawLightDirectionDeg);
+  saved.begin("tcs", false);
+  saved.putFloat("light_off", lightOffsetDeg);
+  saved.end();
+  read_sun_sensor();                                         // recompute with the new offset
+  say(String("[TCS] Light calibrated: sensors read ") + String(rawLightDirectionDeg, 0) + " deg, lamp is at " +
+      String(actualDirectionDeg, 0) + " deg, so offset = " + String(lightOffsetDeg, 1) + " deg (saved).");
+  return true;
 }
 
 /** Turns a number into text for the stream. Invalid readings become "nan" so a plot can skip them. */
@@ -715,6 +801,7 @@ bool tcs_telemetry_enabled()    { return telemetryOn; }
 void tcs_update() {
   send_telemetry_if_due();                                        // live plot data, once per second
   log_row_if_due();                                               // SD card CSV log, once per second (if started)
+  if (tcs_enabled) end_nudge_if_due();                            // short pointing pushes end on time, not just twice a second
   if (millis() - lastUpdateMs < TCS_UPDATE_INTERVAL_MS) return;   // not time yet
   lastUpdateMs = millis();
 
@@ -762,7 +849,7 @@ void tcs_disable() {
   if (!tcs_enabled) return;
   tcs_enabled = false;
   set_louvers(TCS_LOUVER_NOMINAL_PERCENT);
-  set_wheel(0);
+  stop_turning();
   state = TCS_NORMAL;
   say("[TCS] Automatic thermal control OFF.");
 }
@@ -890,6 +977,7 @@ void tcs_print_status() {
   line += ", peltier=" + String(peltierPowerPercent, 0) + "%" + (isnan(peltierTargetC) ? String("") : " (target " + String(peltierTargetC, 1) + "C)");
   line += ", vent_error=" + (isnan(ventErrorDeg) ? String("n/a") : String(ventErrorDeg, 1) + "deg");
   line += ", light_from=" + (isnan(lightDirectionDeg) ? String("too dark") : String(lightDirectionDeg, 0) + "deg");
+  line += " (calibration " + String(lightOffsetDeg, 1) + "deg)";
   if (state == TCS_FAULT) line += String(", fault=") + tcs_fault_name(faultReason);
   line += String(", logging=") + (loggingOn ? logFileName : "off");
   say(line);

@@ -118,6 +118,18 @@
         <div class="readout"><div class="label">Louvers (on the &minus;X face)</div><div class="value" id="vLouver" style="font-size:18px">--</div></div>
         <div class="readout"><div class="label">Louvers pointed away from light?</div><div class="value" id="vAim" style="font-size:18px">--</div></div>
         <div class="readout"><div class="label">Light sensors +X / &minus;X / +Y / &minus;Y</div><div class="value" id="vLightRaw" style="font-size:15px">--</div></div>
+        <div class="readout">
+          <div class="label">Calibrate light direction</div>
+          <p class="note" style="margin:4px 0">Shine the lamp straight at one face, pick that face, press Calibrate. Saved on the board.</p>
+          <select id="calFace" style="width:100%; margin-bottom:6px">
+            <option value="0">+X (solar panels)</option>
+            <option value="90">+Y</option>
+            <option value="180">&minus;X (louvers)</option>
+            <option value="270">&minus;Y</option>
+          </select>
+          <button id="btnCalLight">Calibrate</button>
+          <button id="btnCalClear">Clear</button>
+        </div>
       </div>
     </div>
   </section>
@@ -443,6 +455,10 @@ $('offBtn').onclick = () => {
 // Other buttons
 // ---------------------------------------------------------------------------------------------
 $('logBtn').onclick = () => send('18');
+
+// Light calibration (command 20): the board compares where the sensors say the lamp is with the face picked here.
+$('btnCalLight').onclick = () => send('20', $('calFace').value);
+$('btnCalClear').onclick = () => send('20', '-1');
 $('statusBtn').onclick = () => send('11');
 $('sendBtn').onclick = () => { const c = $('cmdInput').value.trim(); if (c) { send(c); $('cmdInput').value = ''; } };
 $('cmdInput').onkeydown = e => { if (e.key === 'Enter') $('sendBtn').onclick(); };

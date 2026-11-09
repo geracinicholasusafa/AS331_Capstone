@@ -66,6 +66,14 @@ void tcs_enable();
  * @return false if the temperature is outside TCS_MIN_HOLD_TEMP_C to TCS_MAX_HOLD_TEMP_C (nothing changes).
  */
 bool tcs_set_hold_temperature(float holdC);
+
+/**
+ * Lines the light sensors up with the satellite's faces (command 20). Shine the lamp straight at one face,
+ * then call this with that face's direction (0 = +X solar panels, 90 = +Y, 180 = -X louvers, 270 = -Y).
+ * The difference from what the sensors read is saved in the board's memory and kept after power-off.
+ * A negative number clears the calibration. Returns false if it is too dark to calibrate.
+ */
+bool tcs_calibrate_light_direction(float actualDirectionDeg);
 float tcs_get_hold_temperature();
 
 /** Turns automatic thermal control off: louvers to rest, wheel stopped. The thermocouple is still read. */

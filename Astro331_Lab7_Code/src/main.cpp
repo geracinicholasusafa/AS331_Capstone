@@ -53,6 +53,7 @@
  * | 17  | Peltier test heater: fixed power percent for bench testing (0 = off) |
  * | 18  | TCS: Start/stop the SD card CSV log (TCS_log_dataNNN.csv) |
  * | 19  | TCS: Set the hold temperature (above it: turn louvers away from the light, open them wider the hotter it gets); switches the TCS on |
+ * | 20  | TCS: Calibrate the light direction (lamp straight at a face; enter that face's angle, -1 clears). Saved in memory |
  * | 98  | SD Card: List files (USB Serial only) |
  * | 99  | SD Card: Print file menu (USB Serial only) |
  * 
@@ -152,6 +153,7 @@ void manual_set_louvers();
 void set_peltier_target_from_user();
 void set_peltier_power_from_user();
 void set_hold_temperature_from_user();
+void calibrate_light_from_user();
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // SETUP:
@@ -390,6 +392,7 @@ void process_main_menu() {
       Xbee.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Xbee.print("18 - TCS: Start/stop SD card CSV log\n");
       Xbee.print("19 - TCS: Set hold temperature and turn automatic control on\n");
+      Xbee.print("20 - TCS: Calibrate light direction (lamp at a face, enter its angle)\n");
       Xbee.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Xbee.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       
@@ -412,6 +415,7 @@ void process_main_menu() {
       Serial.print("17 - Peltier heater: fixed power percent (0 = off)\n");
       Serial.print("18 - TCS: Start/stop SD card CSV log\n");
       Serial.print("19 - TCS: Set hold temperature and turn automatic control on\n");
+      Serial.print("20 - TCS: Calibrate light direction (lamp at a face, enter its angle)\n");
       Serial.print("98 - SD Card: List Files (USB SERIAL ONLY)\n");
       Serial.print("99 - SD Card: Print File Menu (USB SERIAL ONLY)\n");
       break;
@@ -489,6 +493,10 @@ void process_main_menu() {
 
     case 19: // TCS hold temperature: above it, turn the louvers away from the light and open them (switches the TCS on)
       set_hold_temperature_from_user();
+      break;
+
+    case 20: // Line the light sensors up with the satellite's faces (saved in the board's memory)
+      calibrate_light_from_user();
       break;
 
     case 14: // Turn the live temperature stream on or off
@@ -1408,4 +1416,21 @@ void set_hold_temperature_from_user() {
     return;
   }
   tcs_set_hold_temperature(holdC);
+}
+
+/**
+ * Command 20: lines the light sensors up with the satellite's faces.
+ * Shine the lamp straight at one face, then enter that face's angle:
+ * 0 = +X (solar panels), 90 = +Y, 180 = -X (louvers), 270 = -Y. Enter -1 to clear the calibration.
+ */
+void calibrate_light_from_user() {
+  Serial.println("Shine the lamp straight at one face, then enter its angle: 0 = +X solar panels, 90 = +Y, 180 = -X louvers, 270 = -Y (-1 clears):");
+  Xbee.println("Shine the lamp straight at one face, then enter its angle: 0 = +X solar panels, 90 = +Y, 180 = -X louvers, 270 = -Y (-1 clears):");
+  float angleDeg;
+  if (!read_number_from_user(&angleDeg)) {
+    Serial.println("[CAUTION] No input, calibration not changed.");
+    Xbee.println("[CAUTION] No input, calibration not changed.");
+    return;
+  }
+  tcs_calibrate_light_direction(angleDeg);
 }
