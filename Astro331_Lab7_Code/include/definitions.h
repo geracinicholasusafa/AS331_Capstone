@@ -38,8 +38,15 @@
 #define TCS_MAX_HOLD_TEMP_C      40.0   // Highest hold temperature the command accepts (kept below the 45 C fault limit)
 #define TCS_COOL_HYSTERESIS_C    1.0    // Keep venting until this far BELOW the hold temperature, so it does not flick on and off
 #define TCS_COLD_MARGIN_C        4.0    // This far below the hold temperature counts as "too cold" (louvers shut)
-#define TCS_LOUVER_MIN_OPEN_PERCENT 20.0 // How far the louvers open as soon as venting starts
-#define TCS_LOUVER_GAIN_PERCENT_PER_C 20.0 // Extra opening per degree above the hold temperature (4 C above -> 100%)
+// Closed-loop louver control: while venting, the louver opening is adjusted continuously to keep the panel
+// AT the hold temperature, whatever heater power the team has set. Two parts add together:
+//   "proportional" - opens more the further the panel is above the hold temperature, right now;
+//   "integral"     - slowly builds up while the panel stays above the hold temperature (and shrinks while
+//                    below), so it settles on exactly the opening that balances the heat coming in.
+#define TCS_LOUVER_KP_PERCENT_PER_C   15.0  // Proportional: opening per degree above hold (PROPOSED, tune on the bench)
+#define TCS_LOUVER_KI_PERCENT_PER_C_S 0.2   // Integral: opening added per degree above hold, every second (PROPOSED, tune)
+#define TCS_LOUVER_MIN_STEP_PERCENT   2.0   // Ignore louver changes smaller than this, so the servo does not jitter on sensor noise
+#define TCS_REGULATE_IDLE_MS          60000 // Louvers fully shut and panel below hold for this long -> stop regulating, back to NORMAL
 
 // --- Safety limits (going past these puts the TCS into FAULT) ---
 #define TCS_FAULT_HIGH_C         45.0   // Dangerously hot

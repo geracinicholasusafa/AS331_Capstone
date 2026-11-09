@@ -87,10 +87,18 @@ static float servoLastPercent = -1.0;  // Where we last sent the servo, so we on
  * number the ESP32's PWM hardware wants.
  *
  * The servo is not started until the first time it is asked to move, so it does not twitch at power-up.
+ *
+ * Tiny changes (under TCS_LOUVER_MIN_STEP_PERCENT) are ignored so the servo does not buzz back and forth on
+ * thermocouple noise, except when going fully closed/open or when exactAlways is true (moving by hand).
  */
-static void set_louvers(float openPercent) {
-  louverPercent = constrain(openPercent, TCS_LOUVER_CLOSED_PERCENT, TCS_LOUVER_OPEN_PERCENT);
-  if (servoStarted && louverPercent == servoLastPercent) return;   // already there, nothing to send
+static void set_louvers(float openPercent, bool exactAlways = false) {
+  float wanted = constrain(openPercent, TCS_LOUVER_CLOSED_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+  if (servoStarted) {
+    if (wanted == servoLastPercent) return;                       // already there, nothing to send
+    bool atAnEnd = (wanted == TCS_LOUVER_CLOSED_PERCENT || wanted == TCS_LOUVER_OPEN_PERCENT);
+    if (!exactAlways && !atAnEnd && fabs(wanted - servoLastPercent) < TCS_LOUVER_MIN_STEP_PERCENT) return;
+  }
+  louverPercent = wanted;
 
   // Percentage -> servo angle (the closed and open angles are settings in definitions.h).
   float fractionOpen = (louverPercent - TCS_LOUVER_CLOSED_PERCENT) / (TCS_LOUVER_OPEN_PERCENT - TCS_LOUVER_CLOSED_PERCENT);
@@ -375,15 +383,45 @@ static bool cooled_enough() {
   return !isnan(panelTempC) && panelTempC <= holdTempC - TCS_COOL_HYSTERESIS_C;
 }
 
+static float    louverIntegral = 0.0;    // The slowly built-up part of the louver opening (percent)
+static uint32_t lastRegulateMs = 0;      // When the louver controller last ran (to know how much time passed)
+static uint32_t louversShutSinceMs = 0;  // When the controller last asked for fully shut louvers (0 = not shut)
+
+/** Forgets the built-up part of the louver controller (used when control starts fresh). */
+static void reset_louver_controller() {
+  louverIntegral = 0.0;
+  lastRegulateMs = 0;
+  louversShutSinceMs = 0;
+}
+
 /**
- * How far to open the louvers while venting. Just above the hold temperature they open a little
- * (TCS_LOUVER_MIN_OPEN_PERCENT); every degree hotter opens them TCS_LOUVER_GAIN_PERCENT_PER_C more,
- * up to fully open. So the louvers "modulate": the more heat there is, the more they let out.
+ * The closed-loop louver controller. Called twice a second while venting.
+ *
+ * It looks at how far the panel is above (or below) the hold temperature and works out an opening:
+ *   opening = proportional part + integral part
+ *   proportional = TCS_LOUVER_KP_PERCENT_PER_C x (degrees above hold)       -> reacts right away
+ *   integral    += TCS_LOUVER_KI_PERCENT_PER_C_S x (degrees above hold) x seconds -> settles the last bit
+ * With a fixed heater power, the integral part ends up at exactly the opening that lets out as much
+ * heat as the heater puts in, so the panel sits at the hold temperature.
+ * Both parts are kept between 0 and 100 %, so the integral cannot "wind up" while the louvers are already
+ * fully open or fully shut.
  */
-static float louver_opening_for_temperature() {
-  if (isnan(panelTempC)) return louverPercent;          // no reading: leave them where they are
-  float opening = TCS_LOUVER_MIN_OPEN_PERCENT + TCS_LOUVER_GAIN_PERCENT_PER_C * (panelTempC - holdTempC);
-  return constrain(opening, TCS_LOUVER_MIN_OPEN_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+static float regulate_louver_opening() {
+  uint32_t now = millis();
+  float seconds = (lastRegulateMs == 0) ? 0.0 : (now - lastRegulateMs) / 1000.0f;
+  lastRegulateMs = now;
+  if (isnan(panelTempC)) return louverPercent;          // no reading: leave the louvers where they are
+
+  float degreesAboveHold = panelTempC - holdTempC;
+  louverIntegral = constrain(louverIntegral + TCS_LOUVER_KI_PERCENT_PER_C_S * degreesAboveHold * seconds,
+                             TCS_LOUVER_CLOSED_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+  float opening = TCS_LOUVER_KP_PERCENT_PER_C * degreesAboveHold + louverIntegral;
+  opening = constrain(opening, TCS_LOUVER_CLOSED_PERCENT, TCS_LOUVER_OPEN_PERCENT);
+
+  // Remember how long the controller has wanted the louvers fully shut (heat source gone).
+  if (opening <= TCS_LOUVER_CLOSED_PERCENT) { if (louversShutSinceMs == 0) louversShutSinceMs = now; }
+  else louversShutSinceMs = 0;
+  return opening;
 }
 
 static void run_state_machine() {
@@ -396,6 +434,7 @@ static void run_state_machine() {
       if (isnan(panelTempC)) break;                       // no reading this time; stay put
       if (panelTempC > holdTempC) {
         ventAnyway = false;
+        reset_louver_controller();                        // start the louver controller fresh
         enter_state(TCS_SUN_AVOID);                       // above the hold temperature: first aim the louvers away from the light
       } else if (panelTempC < holdTempC - TCS_COLD_MARGIN_C) {
         enter_state(TCS_COLD_DETECTED);
@@ -404,8 +443,10 @@ static void run_state_machine() {
 
     case TCS_SUN_AVOID:
       // Too hot. Keep the louvers closed (so the Sun does not shine in) while the wheel turns the
-      // satellite until the louvers face away from the brightest light.
+      // satellite until the louvers face away from the brightest light. The louver controller is paused
+      // (its built-up part is kept), so venting carries on from where it was once we are aimed.
       set_louvers(TCS_LOUVER_CLOSED_PERCENT);
+      lastRegulateMs = 0;                                 // do not count the turning time as venting time
       read_sun_sensor();
 
       if (cooled_enough()) {
@@ -428,18 +469,22 @@ static void run_state_machine() {
       break;
 
     case TCS_COOLING:
-      // Open the louvers so internal heat radiates away: wider the hotter it is.
-      set_louvers(louver_opening_for_temperature());
+      // Closed loop: keep adjusting the louver opening to hold the panel AT the hold temperature.
+      // It stays here for as long as there is heat to get rid of; the louvers simply settle at
+      // whatever opening balances the heater.
+      set_louvers(regulate_louver_opening());
       set_wheel(0);
-      if (cooled_enough()) {
-        enter_state(TCS_RECOVERY);                        // cooled down enough
+      if (louversShutSinceMs != 0 && millis() - louversShutSinceMs > TCS_REGULATE_IDLE_MS &&
+          !isnan(panelTempC) && panelTempC < holdTempC) {
+        say("[TCS] No heat to vent for a while, louvers stay shut.");
+        enter_state(TCS_RECOVERY);                        // heat source gone: stop regulating
       } else if (TCS_LOUVER_MAX_OPEN_MS > 0 && time_in_state_ms() > TCS_LOUVER_MAX_OPEN_MS) {
         say("[TCS] Louvers open too long, closing them to avoid over-cooling.");
         enter_state(TCS_RECOVERY);
       } else if (!ventAnyway) {
         // If the satellite has drifted so the louvers face the light again, close them and turn back.
         read_sun_sensor();
-        if (!isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
+        if (louverPercent > TCS_LOUVER_CLOSED_PERCENT && !isnan(ventErrorDeg) && fabs(ventErrorDeg) > TCS_VENT_LOST_TOL_DEG) {
           say("[TCS] Louvers drifted toward the light, turning back.");
           enter_state(TCS_SUN_AVOID);
         }
@@ -574,7 +619,7 @@ void tcs_set_louvers_manual(float openPercent) {
     say("[TCS] Turn automatic thermal control off first (command 10), or it will move the louvers back.");
     return;
   }
-  set_louvers(openPercent);
+  set_louvers(openPercent, true);              // by hand: move exactly where asked, even by 1%
   say(String("[TCS] Louvers set to ") + String(louverPercent, 0) + "% open.");
 }
 
@@ -699,6 +744,7 @@ float tcs_get_hold_temperature() { return holdTempC; }
 void tcs_enable() {
   if (tcs_enabled) return;
   tcs_enabled = true;
+  reset_louver_controller();
   faultReason = TCS_FAULT_NONE;
   badReadCount = 0;
   ventAnyway = false;

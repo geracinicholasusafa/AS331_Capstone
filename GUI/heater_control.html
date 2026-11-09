@@ -27,13 +27,13 @@
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6675; --border: #d9dde4;
     --accent: #2563eb; --danger: #c62828; --ok: #2e7d32;
-    --line1: #d9480f; --line2: #1971c2; --target: #6b7280; --heat: #e8590c;
+    --line1: #d9480f; --line2: #1971c2; --target: #6b7280; --heat: #e8590c; --louver: #7048e8;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #14171c; --panel: #1c2027; --text: #e6e9ee; --muted: #9aa3b2; --border: #313742;
       --accent: #5b8def; --danger: #ef5350; --ok: #66bb6a;
-      --line1: #ff8a4c; --line2: #5aa9ff; --target: #9aa3b2; --heat: #ff922b;
+      --line1: #ff8a4c; --line2: #5aa9ff; --target: #9aa3b2; --heat: #ff922b; --louver: #b197fc;
     }
   }
   * { box-sizing: border-box; }
@@ -141,15 +141,33 @@
           <button id="holdBtn" class="primary">Hold</button>
           <button id="tcsOffBtn">Stop control</button>
         </div>
-        <p class="note">15 to 40 &deg;C. Hold switches automatic control on. Above this temperature the satellite turns
-          its louvers away from the light, then opens them: wider the hotter it gets. Below it, they close again.
-          It does not change the heater.</p>
+        <p class="note">15 to 40 &deg;C. Hold switches closed-loop control on: when the panel goes above this temperature
+          the satellite turns its louvers away from the light, then keeps adjusting the louver opening to hold the panel
+          at this temperature for whatever heater power you set. It does not change the heater.</p>
       </div>
     </div>
     <div class="row" style="margin-top:10px">
       <button id="offBtn" class="danger">HEATER OFF</button>
       <span id="heatWarn"></span>
     </div>
+  </section>
+
+  <!-- 3b. Louvers (servo) -->
+  <section class="panel">
+    <h2>Louvers (servo)</h2>
+    <div class="row">
+      <span style="min-width:150px">Opening now: <strong id="louverNow">--</strong></span>
+      <span id="louverMode" class="status">--</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span>Move by hand:</span>
+      <input type="range" id="louverSlider" min="0" max="100" step="5" value="0">
+      <span id="louverLabel" style="min-width:48px; font-variant-numeric: tabular-nums">0%</span>
+      <button id="louverCloseBtn">Close</button>
+      <button id="louverOpenBtn">Open</button>
+    </div>
+    <p class="note" id="louverNote">0% = closed (servo at 0&deg;), 100% = fully open (servo at 90&deg;). Moving them by hand
+      only works while closed-loop control is off; press Stop control first.</p>
   </section>
 
   <!-- 4. Plots -->
@@ -161,8 +179,12 @@
       <span><span class="swatch" style="background:var(--line2)"></span>Thermocouple 2</span>
       <span><span class="swatch" style="background:var(--target)"></span>Hold temperature</span>
     </div>
-    <h2 style="margin-top:16px">Heater power (%)</h2>
-    <canvas id="heatChart" height="110"></canvas>
+    <h2 style="margin-top:16px">Heater power and louver opening (%)</h2>
+    <canvas id="heatChart" height="130"></canvas>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--heat)"></span>Heater power</span>
+      <span><span class="swatch" style="background:var(--louver)"></span>Louver opening</span>
+    </div>
   </section>
 
   <!-- 5. Data + console -->
@@ -293,7 +315,7 @@ function handleLine(line) {
   const sample = {
     t: (fields.t - firstBoardTimeMs) / 1000,
     temp1: fields.temp_C, temp2: fields.temp2_C,
-    heat: fields.peltier_pct, target: fields.hold_C, tcsOn: fields.tcs_on,
+    heat: fields.peltier_pct, target: fields.hold_C, tcsOn: fields.tcs_on, louver: fields.louver_pct,
     state: fields.state_id
   };
   samples.push(sample);
@@ -322,6 +344,13 @@ function updateReadouts(s) {
   $('vState').textContent = Number.isFinite(s.state) ? (STATE_NAMES[s.state] || '?') : '--';
   $('heatWarn').innerHTML = (s.temp1 > WARN_TEMP_C)
     ? '<span class="warn">Panel above ' + WARN_TEMP_C + ' °C. The board cuts the heater at 45 °C.</span>' : '';
+
+  // Louver panel: show where they are, and only allow moving them by hand when automatic control is off.
+  $('louverNow').textContent = Number.isFinite(s.louver) ? s.louver.toFixed(0) + '%' : '--';
+  const automatic = s.tcsOn === 1;
+  $('louverMode').textContent = automatic ? 'Closed-loop control is moving them' : 'Manual: closed-loop control is off';
+  $('louverMode').className = automatic ? 'status on' : 'status';
+  for (const id of ['louverSlider', 'louverCloseBtn', 'louverOpenBtn']) $(id).disabled = automatic;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +373,18 @@ $('tcsOffBtn').onclick = () => {
   else logLine('[page] Automatic control is already off.');
 };
 
+// ---------------------------------------------------------------------------------------------
+// Louver buttons (command 15 then a percentage). The board refuses if closed-loop control is on.
+// ---------------------------------------------------------------------------------------------
+function moveLouvers(percent) {
+  $('louverSlider').value = percent; $('louverLabel').textContent = percent + '%';
+  send('15', String(percent));
+}
+$('louverSlider').oninput = () => { $('louverLabel').textContent = $('louverSlider').value + '%'; };
+$('louverSlider').onchange = () => moveLouvers(Number($('louverSlider').value));
+$('louverCloseBtn').onclick = () => moveLouvers(0);
+$('louverOpenBtn').onclick = () => moveLouvers(100);
+
 $('offBtn').onclick = () => {
   $('powerSlider').value = 0; $('powerLabel').textContent = '0%';
   send('17', '0');                                                    // 0 power = off
@@ -361,9 +402,9 @@ $('clearBtn').onclick = () => { samples = []; firstBoardTimeMs = null; drawChart
 /** Downloads everything this page has received as a CSV file (empty cell = no valid reading). */
 $('saveBtn').onclick = () => {
   const cell = v => Number.isFinite(v) ? v : '';
-  let csv = 'elapsed_s,temp1_C,temp2_C,heater_pct,hold_C,state\n';
+  let csv = 'elapsed_s,temp1_C,temp2_C,heater_pct,louver_pct,hold_C,state\n';
   for (const s of samples) {
-    csv += [s.t.toFixed(1), cell(s.temp1), cell(s.temp2), cell(s.heat), cell(s.target),
+    csv += [s.t.toFixed(1), cell(s.temp1), cell(s.temp2), cell(s.heat), cell(s.louver), cell(s.target),
             Number.isFinite(s.state) ? STATE_NAMES[s.state] : ''].join(',') + '\n';
   }
   const link = document.createElement('a');
@@ -451,7 +492,7 @@ function drawCharts() {
     { key: 'temp2', color: '--line2' },
     { key: 'target', color: '--target', dashed: true }
   ], null, '°');
-  drawChart($('heatChart'), [{ key: 'heat', color: '--heat' }], [0, 100], '%');
+  drawChart($('heatChart'), [{ key: 'heat', color: '--heat' }, { key: 'louver', color: '--louver' }], [0, 100], '%');
 }
 
 // ---------------------------------------------------------------------------------------------
