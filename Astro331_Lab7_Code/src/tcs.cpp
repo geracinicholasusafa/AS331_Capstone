@@ -405,6 +405,21 @@ static void track_turn(float seconds) {
     wheelCommand += TCS_SPIN_GAIN * rateError * seconds;
   }
   // (No slow wheel spin-down here any more: with the fan pushing, the wheel must keep leaning against it.)
+
+  // Wheel at its speed limit: it cannot push back any harder, so a steady push (the fan) will turn the satellite.
+  // Say so once, so it is obvious why the satellite is drifting.
+  static uint32_t wheelAtLimitSinceMs = 0;
+  static bool     wheelAtLimitReported = false;
+  if (fabs(wheelCommand) >= TCS_SPIN_MAX_THROTTLE - 0.01f) {
+    if (wheelAtLimitSinceMs == 0) wheelAtLimitSinceMs = now;
+    if (!wheelAtLimitReported && now - wheelAtLimitSinceMs > 3000) {
+      wheelAtLimitReported = true;
+      say("[TCS] Reaction wheel at its speed limit: it cannot push back any harder, so the satellite will drift.");
+    }
+  } else if (fabs(wheelCommand) < TCS_SPIN_MAX_THROTTLE - 0.1f) {
+    wheelAtLimitSinceMs = 0;
+    wheelAtLimitReported = false;
+  }
   wheelCommand = constrain(wheelCommand, -TCS_SPIN_MAX_THROTTLE, TCS_SPIN_MAX_THROTTLE);
   set_wheel(wheelCommand * TCS_WHEEL_DIRECTION);
 
